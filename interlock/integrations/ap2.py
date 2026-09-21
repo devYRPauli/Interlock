@@ -52,9 +52,15 @@ refund mandate; using a Payment Mandate to authorize a refund payout is this ada
 Needs the AP2 SDK (not the unrelated `ap2` package on PyPI):
     pip install "ap2 @ git+https://github.com/google-agentic-commerce/AP2@e1ea56d"
 """
-import base64, contextlib, hashlib, secrets, sqlite3, time
 
-SKEW = 0            # seconds past exp a mandate is still accepted
+import base64
+import contextlib
+import hashlib
+import secrets
+import sqlite3
+import time
+
+SKEW = 0  # seconds past exp a mandate is still accepted
 
 
 def _sha256_b64url(text):
@@ -81,42 +87,80 @@ def verify_chain(chain, trusted_keys, audience, nonce, now):
         from ap2.sdk.payment_mandate_chain import PaymentMandateChain
         from jwcrypto.jwk import JWK
     except ImportError as e:
-        raise ImportError(f"{e}. Install the AP2 SDK: {__doc__.rsplit('pip install', 1)[1].strip()}") from None
+        raise ImportError(
+            f"{e}. Install the AP2 SDK: {__doc__.rsplit('pip install', 1)[1].strip()}"
+        ) from None
 
     def root_key(token):
         kid = token.header.get("kid")
         if kid not in trusted_keys:
             raise ValueError(f"root key {kid!r} is not a trusted key")
-        return JWK.from_json(trusted_keys[kid]) if isinstance(trusted_keys[kid], str) else JWK(**trusted_keys[kid])
+        return (
+            JWK.from_json(trusted_keys[kid])
+            if isinstance(trusted_keys[kid], str)
+            else JWK(**trusted_keys[kid])
+        )
 
-    payloads = MandateClient().verify(chain, root_key, expected_aud=audience, expected_nonce=nonce,
-                                      clock_skew_seconds=SKEW, current_time=int(now))
+    payloads = MandateClient().verify(
+        chain,
+        root_key,
+        expected_aud=audience,
+        expected_nonce=nonce,
+        clock_skew_seconds=SKEW,
+        current_time=int(now),
+    )
     parsed = PaymentMandateChain.parse(payloads)
-    dump = lambda m: m.model_dump(mode="json", exclude_none=True)
+
+    def dump(mandate):
+        return mandate.model_dump(mode="json", exclude_none=True)
+
     return dump(parsed.open_mandate), dump(parsed.closed_mandate), parsed.verify()
 
 
-def open_payment_mandate(issuer_key, agent_public_jwk, cap, currency, payee, instrument, exp, iat=None):
+def open_payment_mandate(
+    issuer_key, agent_public_jwk, cap, currency, payee, instrument, exp, iat=None
+):
     """
     Issuer side (the approver's trusted surface): an open Payment Mandate capped at `cap` minor units, for one
     payee ({id, name}) and one instrument ({id, type}), that only the holder of `agent_public_jwk` can close.
     """
-    from ap2.sdk.generated.open_payment_mandate import AllowedPayees, AllowedPaymentInstruments, AmountRange, OpenPaymentMandate
+    from ap2.sdk.generated.open_payment_mandate import (
+        AllowedPayees,
+        AllowedPaymentInstruments,
+        AmountRange,
+        OpenPaymentMandate,
+    )
     from ap2.sdk.mandate import MandateClient
-    m = OpenPaymentMandate(constraints=[AmountRange(currency=currency, max=cap, min=1), AllowedPayees(allowed=[payee]),
-                                        AllowedPaymentInstruments(allowed=[instrument])],
-                           cnf={"jwk": agent_public_jwk}, iat=int(time.time() if iat is None else iat), exp=int(exp))
+
+    m = OpenPaymentMandate(
+        constraints=[
+            AmountRange(currency=currency, max=cap, min=1),
+            AllowedPayees(allowed=[payee]),
+            AllowedPaymentInstruments(allowed=[instrument]),
+        ],
+        cnf={"jwk": agent_public_jwk},
+        iat=int(time.time() if iat is None else iat),
+        exp=int(exp),
+    )
     return MandateClient().create([m], issuer_key)
 
 
-def close_payment_mandate(agent_key, open_token, amount, currency, payee, instrument, transaction_id, nonce, audience):
+def close_payment_mandate(
+    agent_key, open_token, amount, currency, payee, instrument, transaction_id, nonce, audience
+):
     """Agent side: close the open mandate with the exact payment. Returns the `~~` chain a verifier checks."""
     from ap2.sdk.generated.payment_mandate import PaymentMandate
     from ap2.sdk.mandate import MandateClient
-    closed = PaymentMandate(transaction_id=transaction_id, payee=payee, payment_instrument=instrument,
-                            payment_amount={"amount": amount, "currency": currency})
-    return MandateClient().present(holder_key=agent_key, mandate_token=open_token, payloads=[closed], nonce=nonce,
-                                   aud=audience)
+
+    closed = PaymentMandate(
+        transaction_id=transaction_id,
+        payee=payee,
+        payment_instrument=instrument,
+        payment_amount={"amount": amount, "currency": currency},
+    )
+    return MandateClient().present(
+        holder_key=agent_key, mandate_token=open_token, payloads=[closed], nonce=nonce, aud=audience
+    )
 
 
 def stripe_payment(client, field="payment_intent"):
@@ -124,43 +168,73 @@ def stripe_payment(client, field="payment_intent"):
     observe= for a Stripe target that sends to the PaymentIntent in effect[field]: that PaymentIntent as Stripe
     has it, so the payment actually refunded must be the mandate's transaction, customer and card.
     """
+
     def observe(effect):
         p = client.request("GET", f"/payment_intents/{effect[field]}")
-        return {"transaction_id": p["id"], "payee": p.get("customer"), "instrument": p.get("payment_method"),
-                "currency": p["currency"].upper()}
+        return {
+            "transaction_id": p["id"],
+            "payee": p.get("customer"),
+            "instrument": p.get("payment_method"),
+            "currency": p["currency"].upper(),
+        }
+
     return observe
 
 
 def _mandated(closed):
-    return {"amount": closed["payment_amount"]["amount"], "currency": closed["payment_amount"]["currency"].upper(),
-            "payee": closed["payee"]["id"], "instrument": closed["payment_instrument"]["id"],
-            "transaction_id": closed["transaction_id"]}
+    return {
+        "amount": closed["payment_amount"]["amount"],
+        "currency": closed["payment_amount"]["currency"].upper(),
+        "payee": closed["payee"]["id"],
+        "instrument": closed["payment_instrument"]["id"],
+        "transaction_id": closed["transaction_id"],
+    }
 
 
 def _mismatches(closed, effect):
     want = _mandated(closed)
     got = {k: effect.get(k) for k in want}
     got["currency"] = str(got["currency"]).upper()
-    out = [f"effect {k} is {got[k]!r}, the mandate says {want[k]!r}" for k in want if got[k] != want[k]]
+    out = [
+        f"effect {k} is {got[k]!r}, the mandate says {want[k]!r}" for k in want if got[k] != want[k]
+    ]
     if type(effect.get("amount")) is not int:
-        out.append(f"effect amount {effect.get('amount')!r} is not an integer number of minor units")
+        out.append(
+            f"effect amount {effect.get('amount')!r} is not an integer number of minor units"
+        )
     return out
 
 
 class Mandates:
     """A lease store for Gate whose leases are AP2 Payment Mandate chains."""
 
-    def __init__(self, path, trusted_keys, audience, observe=None, clock=time.time, verify=verify_chain):
-        self.path, self.trusted_keys, self.audience, self.clock, self.verify = path, trusted_keys, audience, clock, verify
+    def __init__(
+        self, path, trusted_keys, audience, observe=None, clock=time.time, verify=verify_chain
+    ):
+        self.path, self.trusted_keys, self.audience, self.clock, self.verify = (
+            path,
+            trusted_keys,
+            audience,
+            clock,
+            verify,
+        )
         self.observe = observe
         self._seen = {}
         with self._db() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS mandates (lease_id TEXT PRIMARY KEY, chain TEXT NOT NULL, "
-                       "nonce TEXT NOT NULL, open_id TEXT NOT NULL, registered REAL NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS revocations (id TEXT PRIMARY KEY, at REAL NOT NULL, by TEXT)")
-            db.execute("CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, issued REAL NOT NULL, used REAL)")
-            db.execute("CREATE TABLE IF NOT EXISTS uses (lease_id TEXT NOT NULL, effect_id TEXT NOT NULL, open_id TEXT NOT NULL, "
-                       "amount INTEGER NOT NULL, at REAL NOT NULL, PRIMARY KEY (lease_id, effect_id))")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS mandates (lease_id TEXT PRIMARY KEY, chain TEXT NOT NULL, "
+                "nonce TEXT NOT NULL, open_id TEXT NOT NULL, registered REAL NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS revocations (id TEXT PRIMARY KEY, at REAL NOT NULL, by TEXT)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, issued REAL NOT NULL, used REAL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS uses (lease_id TEXT NOT NULL, effect_id TEXT NOT NULL, open_id TEXT NOT NULL, "
+                "amount INTEGER NOT NULL, at REAL NOT NULL, PRIMARY KEY (lease_id, effect_id))"
+            )
 
     @contextlib.contextmanager
     def _db(self):
@@ -181,16 +255,22 @@ class Mandates:
         """
         lease = mandate_reference(chain)
         with self._db() as db:
-            if not db.execute("UPDATE nonces SET used = ? WHERE nonce = ? AND used IS NULL", (time.time(), nonce)).rowcount:
+            if not db.execute(
+                "UPDATE nonces SET used = ? WHERE nonce = ? AND used IS NULL", (time.time(), nonce)
+            ).rowcount:
                 raise ValueError("nonce was not issued by this verifier, or was already used")
-            db.execute("INSERT OR IGNORE INTO mandates VALUES (?, ?, ?, ?, ?)",
-                       (lease, chain, nonce, open_mandate_id(chain), time.time()))
+            db.execute(
+                "INSERT OR IGNORE INTO mandates VALUES (?, ?, ?, ?, ?)",
+                (lease, chain, nonce, open_mandate_id(chain), time.time()),
+            )
         return lease
 
     def authority(self, lease_id):
         """The approval a lease stands for: the open mandate it closes. The gate binds premises to this."""
         with self._db() as db:
-            row = db.execute("SELECT open_id FROM mandates WHERE lease_id = ?", (lease_id,)).fetchone()
+            row = db.execute(
+                "SELECT open_id FROM mandates WHERE lease_id = ?", (lease_id,)
+            ).fetchone()
         return row[0] if row else lease_id
 
     def reserve(self, lease_id, effect_id, effect):
@@ -199,58 +279,113 @@ class Mandates:
         amount against the open mandate's cap (its AmountRange max, the total it approves). Returns problems;
         empty means reserved. A reservation stays when the effect is later refused: a new approval is a new mandate.
         """
-        cap = next((c.get("max") for c in self.check(lease_id).get("constraints") or []
-                    if c.get("type") == "payment.amount_range"), None)
-        if cap is None:                             # no range, no total to hold the closings to: fail closed
-            return ["open mandate has no amount range with a max, so its closings have no cap to count against"]
+        cap = next(
+            (
+                c.get("max")
+                for c in self.check(lease_id).get("constraints") or []
+                if c.get("type") == "payment.amount_range"
+            ),
+            None,
+        )
+        if cap is None:  # no range, no total to hold the closings to: fail closed
+            return [
+                "open mandate has no amount range with a max, so its closings have no cap to count against"
+            ]
         amount = effect.get("amount")
         with self._db() as db:
-            db.execute("BEGIN IMMEDIATE")           # one reserver at a time, across processes
-            row = db.execute("SELECT open_id FROM mandates WHERE lease_id = ?", (lease_id,)).fetchone()
+            db.execute("BEGIN IMMEDIATE")  # one reserver at a time, across processes
+            row = db.execute(
+                "SELECT open_id FROM mandates WHERE lease_id = ?", (lease_id,)
+            ).fetchone()
             if row is None:
                 return ["mandate not registered"]
-            other = db.execute("SELECT effect_id FROM uses WHERE lease_id = ? AND effect_id != ?", (lease_id, effect_id)).fetchone()
+            other = db.execute(
+                "SELECT effect_id FROM uses WHERE lease_id = ? AND effect_id != ?",
+                (lease_id, effect_id),
+            ).fetchone()
             if other:
                 return [f"closed mandate already used by effect {other[0]}"]
-            spent = db.execute("SELECT COALESCE(SUM(a), 0) FROM (SELECT MAX(amount) AS a FROM uses WHERE open_id = ? "
-                               "AND effect_id != ? GROUP BY effect_id)", (row[0], effect_id)).fetchone()[0]
+            spent = db.execute(
+                "SELECT COALESCE(SUM(a), 0) FROM (SELECT MAX(amount) AS a FROM uses WHERE open_id = ? "
+                "AND effect_id != ? GROUP BY effect_id)",
+                (row[0], effect_id),
+            ).fetchone()[0]
             if spent + amount > cap:
-                return [f"open mandate cap {cap}: {spent} already reserved by other effects, {amount} more asked"]
-            db.execute("INSERT OR IGNORE INTO uses VALUES (?, ?, ?, ?, ?)", (lease_id, effect_id, row[0], amount, time.time()))
+                return [
+                    f"open mandate cap {cap}: {spent} already reserved by other effects, {amount} more asked"
+                ]
+            db.execute(
+                "INSERT OR IGNORE INTO uses VALUES (?, ?, ?, ?, ?)",
+                (lease_id, effect_id, row[0], amount, time.time()),
+            )
         return []
 
     def revoke(self, mandate_id, by=None):
         """Revoke a closed mandate (its reference) or an open one (open_mandate_id), which ends every closing of it."""
         with self._db() as db:
-            db.execute("INSERT OR IGNORE INTO revocations VALUES (?, ?, ?)", (mandate_id, time.time(), by))
+            db.execute(
+                "INSERT OR IGNORE INTO revocations VALUES (?, ?, ?)", (mandate_id, time.time(), by)
+            )
 
     def check(self, lease_id, effect=None):
         """Every check, with what it read. `problems` empty means the mandate covers this effect right now."""
         with self._db() as db:
-            row = db.execute("SELECT chain, nonce, open_id FROM mandates WHERE lease_id = ?", (lease_id,)).fetchone()
+            row = db.execute(
+                "SELECT chain, nonce, open_id FROM mandates WHERE lease_id = ?", (lease_id,)
+            ).fetchone()
             if row is None:
-                return {"lease_id": lease_id, "revoked": None, "max_cents": None, "problems": ["mandate not registered"]}
+                return {
+                    "lease_id": lease_id,
+                    "revoked": None,
+                    "max_cents": None,
+                    "problems": ["mandate not registered"],
+                }
             chain, nonce, open_id = row
-            revoked = db.execute("SELECT id, at, by FROM revocations WHERE id IN (?, ?) ORDER BY at LIMIT 1",
-                                 (lease_id, open_id)).fetchone()
+            revoked = db.execute(
+                "SELECT id, at, by FROM revocations WHERE id IN (?, ?) ORDER BY at LIMIT 1",
+                (lease_id, open_id),
+            ).fetchone()
         now = self.clock()
-        out = {"lease_id": lease_id, "mandate_reference": lease_id, "open_mandate_id": open_id, "checked_at": now,
-               "clock_skew_seconds": SKEW, "revoked": revoked and {"id": revoked[0], "at": revoked[1], "by": revoked[2]},
-               "max_cents": None, "problems": []}
+        out = {
+            "lease_id": lease_id,
+            "mandate_reference": lease_id,
+            "open_mandate_id": open_id,
+            "checked_at": now,
+            "clock_skew_seconds": SKEW,
+            "revoked": revoked and {"id": revoked[0], "at": revoked[1], "by": revoked[2]},
+            "max_cents": None,
+            "problems": [],
+        }
         if revoked:
-            out["problems"].append(f"{'open' if revoked[0] == open_id else 'closed'} mandate revoked")
+            out["problems"].append(
+                f"{'open' if revoked[0] == open_id else 'closed'} mandate revoked"
+            )
         try:
-            open_m, closed, violations = self.verify(chain, self.trusted_keys, self.audience, nonce, now)
-        except Exception as e:                  # a chain that does not verify authorizes nothing
+            open_m, closed, violations = self.verify(
+                chain, self.trusted_keys, self.audience, nonce, now
+            )
+        except Exception as e:  # a chain that does not verify authorizes nothing
             out["problems"].append(f"mandate did not verify: {type(e).__name__}: {e}")
             return out
-        out.update(verified=True, vct=[open_m.get("vct"), closed.get("vct")], exp=open_m.get("exp"),
-                   constraints=open_m.get("constraints"), payee=closed["payee"], instrument=closed["payment_instrument"],
-                   transaction_id=closed["transaction_id"], amount=closed["payment_amount"],
-                   max_cents=closed["payment_amount"]["amount"])
+        out.update(
+            verified=True,
+            vct=[open_m.get("vct"), closed.get("vct")],
+            exp=open_m.get("exp"),
+            constraints=open_m.get("constraints"),
+            payee=closed["payee"],
+            instrument=closed["payment_instrument"],
+            transaction_id=closed["transaction_id"],
+            amount=closed["payment_amount"],
+            max_cents=closed["payment_amount"]["amount"],
+        )
         out["problems"] += violations
-        if not any(c.get("type") == "payment.amount_range" and c.get("max") is not None for c in open_m.get("constraints") or []):
-            out["problems"].append("open mandate has no amount range with a max, so its closings have no cap to count against")
+        if not any(
+            c.get("type") == "payment.amount_range" and c.get("max") is not None
+            for c in open_m.get("constraints") or []
+        ):
+            out["problems"].append(
+                "open mandate has no amount range with a max, so its closings have no cap to count against"
+            )
         if effect is not None:
             out["problems"] += _mismatches(closed, effect) + self._observed(out, closed, effect)
         return out
@@ -258,16 +393,26 @@ class Mandates:
     def _observed(self, out, closed, effect):
         """The payment the target will act on, read from the system of record, must be the mandated one."""
         if self.observe is None:
-            return ["no observe(effect) configured: nothing binds the payment the target acts on to this mandate"]
+            return [
+                "no observe(effect) configured: nothing binds the payment the target acts on to this mandate"
+            ]
         try:
             out["observed"] = seen = self.observe(effect)
         except Exception as e:
-            return [f"could not read the payment from the system of record: {type(e).__name__}: {e}"]
+            return [
+                f"could not read the payment from the system of record: {type(e).__name__}: {e}"
+            ]
         want = _mandated(closed)
-        return [f"system of record: {k} is {seen[k]!r}, the mandate says {want[k]!r}" for k in seen if seen[k] != want.get(k)]
+        return [
+            f"system of record: {k} is {seen[k]!r}, the mandate says {want[k]!r}"
+            for k in seen
+            if seen[k] != want.get(k)
+        ]
 
     def allows(self, lease_id, effect):
-        seen = self._seen[lease_id] = self.check(lease_id, effect if isinstance(effect, dict) else {})
+        seen = self._seen[lease_id] = self.check(
+            lease_id, effect if isinstance(effect, dict) else {}
+        )
         return not seen["problems"]
 
     def describe(self, lease_id):

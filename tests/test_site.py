@@ -1,16 +1,40 @@
 """The landing page and the short README stay correct: the copied prompt matches docs/install-with-ai.md,
 snippets parse, the live demo URL lives in one constant, and every relative link in the moved docs resolves."""
-import html, json, os, re, unittest
+
+import html
+import json
+import os
+import re
+import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def read(*p):
     with open(os.path.join(ROOT, *p), encoding="utf-8") as f:
         return f.read()
-DOCS = ["README.md", "docs/proof.md", "docs/how-it-works.md", "docs/integrations.md", "docs/install-with-ai.md"]
+
+
+DOCS = [
+    "README.md",
+    "CONTRIBUTING.md",
+    "docs/README.md",
+    "docs/architecture.md",
+    "docs/validation.md",
+    "examples/README.md",
+    "examples/artifact_publication/README.md",
+    "docs/proof.md",
+    "docs/how-it-works.md",
+    "docs/integrations.md",
+    "docs/install-with-ai.md",
+]
 
 
 def anchors(text):
-    return {re.sub(r"[^\w\- ]", "", h.strip().lower()).replace(" ", "-") for h in re.findall(r"^#+ (.+)$", text, re.M)}
+    return {
+        re.sub(r"[^\w\- ]", "", h.strip().lower()).replace(" ", "-")
+        for h in re.findall(r"^#+ (.+)$", text, re.M)
+    }
 
 
 class Site(unittest.TestCase):
@@ -18,20 +42,35 @@ class Site(unittest.TestCase):
         self.page = read("site", "index.html")
 
     def pre(self, id_):
-        return html.unescape(re.search(r'<pre[^>]*id="%s"[^>]*>(.*?)</pre>' % id_, self.page, re.S)[1])
+        return html.unescape(
+            re.search(r'<pre[^>]*id="%s"[^>]*>(.*?)</pre>' % id_, self.page, re.S)[1]
+        )
 
     def test_prompt_matches_doc_and_is_short(self):
-        prompt = read("docs", "install-with-ai.md").split("```text\n")[1].split("```")[0].rstrip("\n")
+        prompt = (
+            read("docs", "install-with-ai.md").split("```text\n")[1].split("```")[0].rstrip("\n")
+        )
         self.assertEqual(self.pre("ai-prompt"), prompt)
         self.assertLess(len(prompt.split()), 450)
-        for must in ("gate.recover()", "never from model output", "Never claim exactly-once", "idempotency_key",
-                     "interlock.temporal.gated", "interlock.mcp_proxy", "interlock.tools.protect",
-                     "protect_tools", "Guard", "could not wrap"):
+        for must in (
+            "gate.recover()",
+            "never from model output",
+            "Never claim exactly-once",
+            "idempotency_key",
+            "interlock.temporal.gated",
+            "interlock.mcp_proxy",
+            "interlock.tools.protect",
+            "protect_tools",
+            "Guard",
+            "could not wrap",
+        ):
             self.assertIn(must.lower(), prompt.lower())
 
     def test_hero_is_one_action_with_the_showcase(self):
         # The first screen is the headline, one Install with your AI button and the crash replay beside it: no lede or small print.
-        hero = self.page.split('<section class="scene scene-night hero"', 1)[1].split("</section>", 1)[0]
+        hero = self.page.split('<section class="scene scene-night hero"', 1)[1].split(
+            "</section>", 1
+        )[0]
         self.assertEqual(hero.count("data-install"), 1)
         self.assertIn("Install with your AI", hero)
         self.assertIn("data-hero", hero)
@@ -51,26 +90,37 @@ class Site(unittest.TestCase):
         self.assertNotRegex(self.page, r'role="tab"[^>]*data-add-tab')
         self.assertIn('aria-pressed="true" data-add-tab="python"', self.page)
         self.assertIn('o.setAttribute("aria-pressed", String(o === tab))', self.page)
-        self.assertRegex(self.page, r'\.dm-tabs button\[aria-pressed="true"\][^{]*\{[^}]*border-color')
+        self.assertRegex(
+            self.page, r'\.dm-tabs button\[aria-pressed="true"\][^{]*\{[^}]*border-color'
+        )
 
     def test_adk_premises_come_from_decision_time(self):
         # Premises captured inside the proposal are always fresh, so the stale-decision check could never fire.
-        doc = read("docs", "integrations.md").split("## Google ADK")[1].split("```python\n")[1].split("```")[0]
+        doc = (
+            read("docs", "integrations.md")
+            .split("## Google ADK")[1]
+            .split("```python\n")[1]
+            .split("```")[0]
+        )
         for adk in (self.pre("add-adk"), doc):
             self.assertIn('"premises": ctx.state["premises"]', adk)
             self.assertNotIn("capture(", adk)
 
     def test_report_rewrites_proof_counts(self):
         import report
+
         text = "415 tests across 40 files; 363 passed, 52 skipped, 0 failed. 415 tests in 40 files, 363 passed and 52 skipped"
-        self.assertEqual(report.sync_proof(text, 9, 2, 7, 2),
-                         "9 tests across 2 files; 7 passed, 2 skipped, 0 failed. 9 tests in 2 files, 7 passed and 2 skipped")
+        self.assertEqual(
+            report.sync_proof(text, 9, 2, 7, 2),
+            "9 tests across 2 files; 7 passed, 2 skipped, 0 failed. 9 tests in 2 files, 7 passed and 2 skipped",
+        )
         with self.assertRaises(AssertionError):
             report.sync_proof("no counts here", 9, 2, 7, 2)
 
     def test_proof_test_counts_match_tests_readme(self):
         run, files, passed, skipped = re.search(
-            r"Tests: (\d+) in (\d+) files; (\d+) passed, (\d+) skipped", read("tests", "README.md")).groups()
+            r"Tests: (\d+) in (\d+) files; (\d+) passed, (\d+) skipped", read("tests", "README.md")
+        ).groups()
         proof = read("docs", "proof.md")
         self.assertIn(f"{run} tests across {files} files", proof)
         self.assertIn(f"{passed} passed, {skipped} skipped, 0 failed", proof)
@@ -88,10 +138,13 @@ class Site(unittest.TestCase):
                 if re.match(r"[a-z]+:", target):
                     continue
                 path, _, anchor = target.partition("#")
-                full = os.path.normpath(os.path.join(base, path)) if path else os.path.join(ROOT, doc)
+                full = (
+                    os.path.normpath(os.path.join(base, path)) if path else os.path.join(ROOT, doc)
+                )
                 self.assertTrue(os.path.exists(full), f"{doc}: {target}")
                 if anchor and full.endswith(".md"):
-                    self.assertIn(anchor, anchors(open(full, encoding="utf-8").read()), f"{doc}: {target}")
+                    with open(full, encoding="utf-8") as document:
+                        self.assertIn(anchor, anchors(document.read()), f"{doc}: {target}")
 
 
 class PromptCrashRecipe(unittest.TestCase):
@@ -99,25 +152,38 @@ class PromptCrashRecipe(unittest.TestCase):
 
     def test_restart_recovers_with_one_effect(self):
         import tempfile
+
         from interlock import Interlock
         from interlock.gate import SimulatedCrash
+
         expected = {1: "COMMITTED_BY_RETRY", 2: "COMMITTED_ON_QUERY", 3: "AMBIGUOUS"}
         for tier, status in expected.items():
             with self.subTest(tier=tier), tempfile.TemporaryDirectory() as d:
                 sent = []
+
                 def refund(order, idempotency_key):
                     if tier == 1 and idempotency_key in sent:
                         return "deduped"
                     sent.append(idempotency_key)
-                kw = ({"dedupes": True} if tier == 1 else
-                      {"lookup": lambda order, idempotency_key: idempotency_key in sent} if tier == 2 else {})
+
+                kw = (
+                    {"dedupes": True}
+                    if tier == 1
+                    else {"lookup": lambda order, idempotency_key: idempotency_key in sent}
+                    if tier == 2
+                    else {}
+                )
                 fn = Interlock(d).effect(key=lambda order: f"refund:{order}", **kw)(refund)
                 with self.assertRaises(SimulatedCrash):
                     fn.gate.submit(fn.proposal("881"), crash_after_effect=True)
                 restarted = Interlock(d)
-                self.assertEqual(restarted.recover(), {})      # nothing registered yet: why the prompt says decorate again
+                self.assertEqual(
+                    restarted.recover(), {}
+                )  # nothing registered yet: why the prompt says decorate again
                 fn = restarted.effect(key=lambda order: f"refund:{order}", **kw)(refund)
-                self.assertEqual([s for g in restarted.recover().values() for s in g.values()], [status])
+                self.assertEqual(
+                    [s for g in restarted.recover().values() for s in g.values()], [status]
+                )
                 fn("881")
                 self.assertEqual(len(sent), 1)
 

@@ -18,10 +18,19 @@ status and amount, never the payload or the signature header, so auditors re-fet
 
 Test mode only: live-mode events are refused.
 """
-import hashlib, hmac, json, time
+
+import hashlib
+import hmac
+import json
+import time
+
 from .escalation import RANK, final, record, sent_refund
 
-TYPES = ("refund.created", "refund.updated", "refund.failed")   # charge.refunded carries no refund metadata
+TYPES = (
+    "refund.created",
+    "refund.updated",
+    "refund.failed",
+)  # charge.refunded carries no refund metadata
 
 
 class WebhookError(ValueError):
@@ -32,7 +41,7 @@ def verify_webhook(payload, header, secret, now=None, tolerance=300):
     """The event, once the signature over the raw bytes verifies. Errors never quote the inputs."""
     if not isinstance(secret, str) or not secret.startswith("whsec_"):
         raise ValueError("webhook secret must be a whsec_ test endpoint secret")
-    if not tolerance > 0:                                          # 0 would disable the replay check
+    if not tolerance > 0:  # 0 would disable the replay check
         raise ValueError("tolerance must be positive")
     if not isinstance(payload, bytes):
         raise WebhookError("payload must be the raw request bytes")
@@ -53,7 +62,9 @@ def verify_webhook(payload, header, secret, now=None, tolerance=300):
         raise WebhookError("unsigned webhook")
     if abs((time.time() if now is None else now) - t) > tolerance:
         raise WebhookError("timestamp outside tolerance")
-    expected = hmac.new(secret.encode(), f"{t}.".encode() + payload, hashlib.sha256).hexdigest().encode()
+    expected = (
+        hmac.new(secret.encode(), f"{t}.".encode() + payload, hashlib.sha256).hexdigest().encode()
+    )
     if not any(hmac.compare_digest(expected, v.encode()) for v in v1s):
         raise WebhookError("signature does not match")
     event = json.loads(payload)
@@ -76,8 +87,10 @@ def confirm_event(journal, target, payload, header, secret, now=None):
 
 def confirm_by_lookup(journal, target, eid):
     """Ask Stripe for this effect's refunds, failed ones included. NOT_FOUND when there are none."""
-    # ponytail: first 100 refunds on the payment only, page with starting_after if a payment ever has more
-    data = target.client.request("GET", "/refunds", {"payment_intent": target.payment_intent, "limit": 100})["data"]
+    # Reads the first 100 refunds; paginate with starting_after for larger histories.
+    data = target.client.request(
+        "GET", "/refunds", {"payment_intent": target.payment_intent, "limit": 100}
+    )["data"]
     found = [r for r in data if (r.get("metadata") or {}).get("interlock_effect_id") == eid]
     if not found:
         return "NOT_FOUND"
@@ -90,8 +103,10 @@ def _record(journal, target, eid, obj, via, event, created):
         sent = [e for e in entries if e["kind"] == "DISPATCHED"]
         if not sent or obj.get("amount") != (sent[-1].get("effect") or {}).get("amount"):
             return "mismatch"
-        paid = (sent[-1].get("premises") or {}).get("payment_intent", target.payment_intent)   # a handler's target
-        if obj.get("payment_intent") != paid:                                                 # may come from the event
+        paid = (sent[-1].get("premises") or {}).get(
+            "payment_intent", target.payment_intent
+        )  # a handler's target
+        if obj.get("payment_intent") != paid:  # may come from the event
             return "mismatch"
         refund = sent_refund(entries)
         if refund is not None and obj.get("id") != refund:
@@ -106,8 +121,27 @@ def _record(journal, target, eid, obj, via, event, created):
             return "duplicate"
         return None
 
-    entry, blocker = journal.append_if("CONFIRMED", eid, check, **record(
-        "CONFIRMED", via=via, event=event, refund=obj.get("id"), status=obj.get("status"),
-        amount=obj.get("amount"), payment_intent=obj.get("payment_intent"), created=created))
-    return ("CONFIRMED" if entry else "DUPLICATE_IGNORED" if blocker == "duplicate"
-            else "IGNORED:out_of_order" if blocker == "out_of_order" else "REFUSED:mismatch")
+    entry, blocker = journal.append_if(
+        "CONFIRMED",
+        eid,
+        check,
+        **record(
+            "CONFIRMED",
+            via=via,
+            event=event,
+            refund=obj.get("id"),
+            status=obj.get("status"),
+            amount=obj.get("amount"),
+            payment_intent=obj.get("payment_intent"),
+            created=created,
+        ),
+    )
+    return (
+        "CONFIRMED"
+        if entry
+        else "DUPLICATE_IGNORED"
+        if blocker == "duplicate"
+        else "IGNORED:out_of_order"
+        if blocker == "out_of_order"
+        else "REFUSED:mismatch"
+    )

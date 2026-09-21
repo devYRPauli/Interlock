@@ -38,7 +38,13 @@ them; a signature binds those attestations to the key holder, it does not re-run
 
     python3 -m interlock.receipts receipt.json [--key KEY]
 """
-import hashlib, hmac, json, sys
+
+import argparse
+import hashlib
+import hmac
+import json
+import sys
+
 from .escalation import final, sent_refund
 from .journal import entry_hash
 
@@ -69,7 +75,9 @@ def verify(receipt, key=None):
         if e.get("hash") != entry_hash(e):
             problems.append(f"entry {i} ({e.get('kind')}) was altered")
         if e.get("prev") != prev:
-            problems.append(f"entry {i} ({e.get('kind')}) is out of order, or an entry before it is missing")
+            problems.append(
+                f"entry {i} ({e.get('kind')}) is out of order, or an entry before it is missing"
+            )
         prev = e.get("hash")
     chained = not problems
 
@@ -84,8 +92,17 @@ def verify(receipt, key=None):
     elif es[0].get("kind") != "PROPOSED":
         problems.append("the receipt does not start with a proposal")
 
-    sends, once, open_, authorized_seen, refused, effect, evidence, at_recovery = [], True, False, False, None, {}, None, None
-    rejected = False                    # the target said a send failed; only a person's escalation may send it again
+    sends, once, open_, authorized_seen, refused, effect, evidence, at_recovery = (
+        [],
+        True,
+        False,
+        False,
+        None,
+        {},
+        None,
+        None,
+    )
+    rejected = False  # the target said a send failed; only a person's escalation may send it again
     for e in es:
         if e.get("kind") == "ESCALATED":
             rejected = False
@@ -114,8 +131,10 @@ def verify(receipt, key=None):
             evidence = e.get("result") or e.get("found")
         if e.get("kind") == "REFUSED" and e.get("resolves") and open_:
             rejected = rejected or e.get("code") == "target_error"
-            sends.pop()         # closed by a refusal: that send never landed, so its checks attest to nothing that fired
-        if e.get("kind") in ("COMMITTED", "AMBIGUOUS") or (e.get("kind") == "REFUSED" and e.get("resolves")):
+            sends.pop()  # closed by a refusal: that send never landed, so its checks attest to nothing that fired
+        if e.get("kind") in ("COMMITTED", "AMBIGUOUS") or (
+            e.get("kind") == "REFUSED" and e.get("resolves")
+        ):
             open_ = False
 
     kinds = [e.get("kind") for e in es]
@@ -134,12 +153,23 @@ def verify(receipt, key=None):
     if held is False:
         problems.append("a send has no record of premises holding")
 
-    return {"effect_id": effect_id, "valid": not problems, "tamper_evident": chained, "signed": signed,
-            "happened": happened, "happened_once": once, "authorized_when_fired": authorized,
-            "assumptions_held": held, "refused": None if happened is True else refused,
-            "evidence": evidence, "rechecked_at_recovery": at_recovery, **decisions,
-            "confirmed_by_target": confirms["confirmed_by_target"], "confirmation": confirms["confirmation"],
-            "problems": problems}
+    return {
+        "effect_id": effect_id,
+        "valid": not problems,
+        "tamper_evident": chained,
+        "signed": signed,
+        "happened": happened,
+        "happened_once": once,
+        "authorized_when_fired": authorized,
+        "assumptions_held": held,
+        "refused": None if happened is True else refused,
+        "evidence": evidence,
+        "rechecked_at_recovery": at_recovery,
+        **decisions,
+        "confirmed_by_target": confirms["confirmed_by_target"],
+        "confirmation": confirms["confirmation"],
+        "problems": problems,
+    }
 
 
 def _people(es, problems):
@@ -154,21 +184,37 @@ def _people(es, problems):
         kind, lease = e.get("kind"), e.get("lease")
         if kind == "ESCALATED":
             latest = e
-            history.append({"at": e.get("at"), "reason": e.get("reason"), "group": e.get("group"),
-                            "routed_to": e.get("routed_to"), "level": e.get("level"), "breach": e.get("breach"),
-                            "changes": e.get("changes"), "repairs": len(e.get("repairs") or []), "decision": None,
-                            "hash": e.get("hash")})
+            history.append(
+                {
+                    "at": e.get("at"),
+                    "reason": e.get("reason"),
+                    "group": e.get("group"),
+                    "routed_to": e.get("routed_to"),
+                    "level": e.get("level"),
+                    "breach": e.get("breach"),
+                    "changes": e.get("changes"),
+                    "repairs": len(e.get("repairs") or []),
+                    "decision": None,
+                    "hash": e.get("hash"),
+                }
+            )
         elif kind == "DECIDED":
             if latest is None or e.get("escalation") != latest.get("hash"):
                 problems.append("a decision answers an escalation that was superseded or missing")
-            elif e.get("group") != latest.get("group") or e.get("by") not in (e.get("members") or []):
+            elif e.get("group") != latest.get("group") or e.get("by") not in (
+                e.get("members") or []
+            ):
                 problems.append("decided by someone the item was not routed to")
             if e.get("escalation") in answered:
                 problems.append("decided twice")
             answered.setdefault(e.get("escalation"), e)
             for h in history:
                 if h["hash"] == e.get("escalation") and h["decision"] is None:
-                    h["decision"] = {"by": e.get("by"), "decision": e.get("decision"), "at": e.get("at")}
+                    h["decision"] = {
+                        "by": e.get("by"),
+                        "decision": e.get("decision"),
+                        "at": e.get("at"),
+                    }
             closed = closed or e.get("decision") in ("reject", "repair")
         elif kind == "DISPATCHED":
             sent = lease
@@ -179,8 +225,12 @@ def _people(es, problems):
                 d = answered.get(latest.get("hash"))
                 if not (person and lease.get("escalation") == latest.get("hash")):
                     problems.append("sent without the decision its latest escalation asked for")
-                elif not (d and d.get("decision") == "approve" and
-                          (d.get("by"), d.get("at"), d.get("group")) == (lease.get("by"), lease.get("at"), lease.get("group"))):
+                elif not (
+                    d
+                    and d.get("decision") == "approve"
+                    and (d.get("by"), d.get("at"), d.get("group"))
+                    == (lease.get("by"), lease.get("at"), lease.get("group"))
+                ):
                     problems.append("a person's send has no matching decision")
                 if e.get("premises") != latest.get("facts"):
                     problems.append("sent on facts the approver never saw")
@@ -192,7 +242,11 @@ def _people(es, problems):
         del h["hash"]
     by = landed.get("by") if isinstance(landed, dict) else None
     verified = False if len(problems) > before else True if history else None
-    return {"approved_by": None if by == "policy" else by, "approval_verified": verified, "escalations": history}
+    return {
+        "approved_by": None if by == "policy" else by,
+        "approval_verified": verified,
+        "escalations": history,
+    }
 
 
 def _confirmations(es, problems, open_):
@@ -216,13 +270,22 @@ def _confirmations(es, problems, open_):
     if len(refunds) > 1:
         problems.append("target confirmed more than one refund")
     kinds = [e.get("kind") for e in es]
-    never_landed = not open_ and "COMMITTED" not in kinds and "AMBIGUOUS" not in kinds and any(
-        e.get("kind") == "REFUSED" and e.get("resolves") for e in es)
+    never_landed = (
+        not open_
+        and "COMMITTED" not in kinds
+        and "AMBIGUOUS" not in kinds
+        and any(e.get("kind") == "REFUSED" and e.get("resolves") for e in es)
+    )
     if never_landed and any(c["status"] == "succeeded" for c in seen):
         problems.append("target confirmed an effect the journal says never landed")
     last = final([c["status"] for c in seen])
-    return {"refunds": len(refunds), "confirmation": seen,
-            "confirmed_by_target": None if last is None else {"succeeded": True, "failed": False, "canceled": False}.get(last, "pending")}
+    return {
+        "refunds": len(refunds),
+        "confirmation": seen,
+        "confirmed_by_target": None
+        if last is None
+        else {"succeeded": True, "failed": False, "canceled": False}.get(last, "pending"),
+    }
 
 
 def _lease_held(checks, effect):
@@ -231,22 +294,24 @@ def _lease_held(checks, effect):
     if checks.get("lease_live") is not True:
         return False
     if checks.get("use_problems") or (grant.get("problems") if isinstance(grant, dict) else None):
-        return False                                       # an Envelope said the approval was used or did not cover it
+        return False  # an Envelope said the approval was used or did not cover it
     if isinstance(grant, dict):
         if grant.get("revoked") is not None:
             return False
-        if grant.get("max_cents") is not None and not (type(amount) is int and amount <= grant["max_cents"]):
+        if grant.get("max_cents") is not None and not (
+            type(amount) is int and amount <= grant["max_cents"]
+        ):
             return False
     return True
 
 
 def main(argv=None):
-    args = sys.argv[1:] if argv is None else argv
-    if not args:
-        sys.exit("usage: interlock-verify receipt.json [--key KEY]")
-    key = args[args.index("--key") + 1] if "--key" in args else None
-    with open(args[0]) as f:
-        result = verify(json.load(f), key)
+    parser = argparse.ArgumentParser(description="Verify an Interlock receipt bundle.")
+    parser.add_argument("receipt", help="Path to the receipt JSON file")
+    parser.add_argument("--key", help="Optional HMAC verification key")
+    args = parser.parse_args(argv)
+    with open(args.receipt) as f:
+        result = verify(json.load(f), args.key)
     print(json.dumps(result, indent=2))
     sys.exit(0 if result["valid"] else 1)
 

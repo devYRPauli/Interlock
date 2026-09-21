@@ -53,11 +53,18 @@ Every send holds a claim on its effect until it is resolved. Recovery takes an e
 over only after that claim expires (claim_ttl), so an effect still being applied is
 never sent a second time. Targets must time out well inside claim_ttl.
 """
-import os, socket, time, uuid
+
+import os
+import socket
+import time
+import uuid
+
 from .escalation import WHY
 from .journal import CLAIM_TTL, _plain, effect_id_for, open_dispatch, open_journal
 
-DEDUP_MARGIN = 600      # seconds of clock skew allowed for: a dedup key this close to expiry counts as expired
+DEDUP_MARGIN = (
+    600  # seconds of clock skew allowed for: a dedup key this close to expiry counts as expired
+)
 
 
 def _nonempty(**fields):
@@ -82,14 +89,17 @@ class Gate:
     an effect is dispatched by exactly one of them and recovered by exactly one of them.
     Any other path is a JSONL file, safe across processes on one machine.
     """
+
     def __init__(self, target, journal_path, leases, claim_ttl=CLAIM_TTL):
         self.target = target
         self.journal = open_journal(journal_path)
         self.leases = leases
         self.claim_ttl = claim_ttl
         self.owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
-        self.sender = self.owner + "/send"     # a separate owner, so even this gate's recover() waits out its own sends
-        self.claims = {}                       # symbol -> agent holding an unreleased claim
+        self.sender = (
+            self.owner + "/send"
+        )  # a separate owner, so even this gate's recover() waits out its own sends
+        self.claims = {}  # symbol -> agent holding an unreleased claim
 
     def claim(self, agent, symbol):
         """Declare intent to write a symbol. Returns the other claimant, or None."""
@@ -113,20 +123,33 @@ class Gate:
         prior = self.journal.entries(eid)
         kinds = [e["kind"] for e in prior]
         request = {"request": proposal["request"]} if "request" in proposal else {}
-        if open_dispatch(prior):                                        # being sent, or crashed mid-effect:
-            return "IN_FLIGHT"                                          # recover() decides, a resend doesn't
+        if open_dispatch(prior):  # being sent, or crashed mid-effect:
+            return "IN_FLIGHT"  # recover() decides, a resend doesn't
 
         recorded = next((e.get("effect") for e in prior if e["kind"] == "PROPOSED"), None)
-        if recorded is not None and recorded != effect:                 # I5
-            self.journal.append("PROPOSED", eid, agent=proposal["agent"], lease=lease,
-                                premises=proposal["premises"], effect=effect, **request)
-            self.journal.append("REFUSED", eid, code="conflicting_payload", reason="payload differs from recorded decision",
-                                recorded=recorded, offered=effect)
+        if recorded is not None and recorded != effect:  # I5
+            self.journal.append(
+                "PROPOSED",
+                eid,
+                agent=proposal["agent"],
+                lease=lease,
+                premises=proposal["premises"],
+                effect=effect,
+                **request,
+            )
+            self.journal.append(
+                "REFUSED",
+                eid,
+                code="conflicting_payload",
+                reason="payload differs from recorded decision",
+                recorded=recorded,
+                offered=effect,
+            )
             return "REFUSED:conflicting_payload"
 
-        if "AMBIGUOUS" in kinds:                                        # P: never resend what nobody can confirm
+        if "AMBIGUOUS" in kinds:  # P: never resend what nobody can confirm
             return "AMBIGUOUS"
-        if "COMMITTED" in kinds:                                        # I2
+        if "COMMITTED" in kinds:  # I2
             return "DUPLICATE_IGNORED"
 
         # A retry under the same authority is checked against the premises it was decided on;
@@ -134,54 +157,113 @@ class Gate:
         # A store whose leases are closings of one approval (AP2: many closed mandates per open
         # mandate) names that approval with authority(lease), so re-closing it is not a new decision.
         authority = getattr(self.leases, "authority", lambda lease: lease)
-        decided_on = next((e["premises"] for e in prior
-                           if e["kind"] == "PROPOSED" and authority(e.get("lease")) == authority(lease)),
-                          proposal["premises"])
-        self.journal.append("PROPOSED", eid, agent=proposal["agent"], lease=lease,
-                            premises=proposal["premises"], effect=effect, **request)
+        decided_on = next(
+            (
+                e["premises"]
+                for e in prior
+                if e["kind"] == "PROPOSED" and authority(e.get("lease")) == authority(lease)
+            ),
+            proposal["premises"],
+        )
+        self.journal.append(
+            "PROPOSED",
+            eid,
+            agent=proposal["agent"],
+            lease=lease,
+            premises=proposal["premises"],
+            effect=effect,
+            **request,
+        )
 
-        for sym in proposal.get("defines", []):                         # I6
+        for sym in proposal.get("defines", []):  # I6
             holder = self.claims.get(sym)
-            if (holder and holder != proposal["agent"]) or sym in getattr(self.target, "symbol_table", lambda: {})():
-                self.journal.append("REFUSED", eid, code="duplicate_symbol", reason=f"{sym} already defined or claimed by {holder}")
+            if (holder and holder != proposal["agent"]) or sym in getattr(
+                self.target, "symbol_table", lambda: {}
+            )():
+                self.journal.append(
+                    "REFUSED",
+                    eid,
+                    code="duplicate_symbol",
+                    reason=f"{sym} already defined or claimed by {holder}",
+                )
                 return "REFUSED:duplicate_symbol"
 
-        checks = self._lease_seen(lease, effect)                        # I4
+        checks = self._lease_seen(lease, effect)  # I4
         if not checks["lease_live"]:
-            self.journal.append("REFUSED", eid, code="lease", reason="lease not live, or it does not cover this effect", checks=checks)
+            self.journal.append(
+                "REFUSED",
+                eid,
+                code="lease",
+                reason="lease not live, or it does not cover this effect",
+                checks=checks,
+            )
             return "REFUSED:lease"
         self.journal.append("AUTHORIZED", eid, lease=lease)
 
-        checks["violations"], changes, repairs = self._premises(decided_on, eid, effect)     # I3
+        checks["violations"], changes, repairs = self._premises(decided_on, eid, effect)  # I3
         if checks["violations"]:
-            self.journal.append("REFUSED", eid, code="stale_premise", reason=checks["violations"], checks=checks,
-                                **_nonempty(changes=changes, repairs=repairs))
+            self.journal.append(
+                "REFUSED",
+                eid,
+                code="stale_premise",
+                reason=checks["violations"],
+                checks=checks,
+                **_nonempty(changes=changes, repairs=repairs),
+            )
             return "REFUSED:stale_premise"
 
-        reserve = getattr(self.leases, "reserve", None)                 # a store that counts uses binds the lease to this effect
+        reserve = getattr(
+            self.leases, "reserve", None
+        )  # a store that counts uses binds the lease to this effect
         if reserve:
             checks["use_problems"] = used = reserve(lease, eid, effect)
             if used:
-                self.journal.append("REFUSED", eid, code="lease_used", reason="lease already used: " + "; ".join(used), checks=checks)
+                self.journal.append(
+                    "REFUSED",
+                    eid,
+                    code="lease_used",
+                    reason="lease already used: " + "; ".join(used),
+                    checks=checks,
+                )
                 return "REFUSED:lease_used"
 
-        blocker = self.journal.dispatch(eid, effect, self.sender, self.claim_ttl, lease=lease, premises=decided_on,
-                                        checks=checks)                  # I1, I7, I8: atomic across workers
-        if blocker == "conflicting_payload":                            # another worker recorded a different decision first
-            self.journal.append("REFUSED", eid, code="conflicting_payload", reason="payload differs from a decision recorded concurrently")
+        blocker = self.journal.dispatch(
+            eid,
+            effect,
+            self.sender,
+            self.claim_ttl,
+            lease=lease,
+            premises=decided_on,
+            checks=checks,
+        )  # I1, I7, I8: atomic across workers
+        if blocker == "conflicting_payload":  # another worker recorded a different decision first
+            self.journal.append(
+                "REFUSED",
+                eid,
+                code="conflicting_payload",
+                reason="payload differs from a decision recorded concurrently",
+            )
             return "REFUSED:conflicting_payload"
-        if blocker in ("closed", "awaiting_decision", "target_error"):  # a person owns this effect now
+        if blocker in (
+            "closed",
+            "awaiting_decision",
+            "target_error",
+        ):  # a person owns this effect now
             self.journal.append("REFUSED", eid, code=blocker, reason=WHY[blocker])
             return f"REFUSED:{blocker}"
         if blocker:
-            return {"committed": "DUPLICATE_IGNORED", "ambiguous": "AMBIGUOUS"}.get(blocker, "IN_FLIGHT")
+            return {"committed": "DUPLICATE_IGNORED", "ambiguous": "AMBIGUOUS"}.get(
+                blocker, "IN_FLIGHT"
+            )
 
         try:
             if crash_before_effect:
-                raise SimulatedCrash(eid)          # in-flight marker written, request never sent
+                raise SimulatedCrash(eid)  # in-flight marker written, request never sent
             result = self.target.apply(eid, effect, crash_after_effect)  # may raise SimulatedCrash
         except SimulatedCrash:
-            self.journal.release(eid, self.sender)  # a simulated death ends the process's claim; a real one waits out claim_ttl
+            self.journal.release(
+                eid, self.sender
+            )  # a simulated death ends the process's claim; a real one waits out claim_ttl
             raise
         except Rejected as e:
             return self.settle_failed(eid, str(e))
@@ -195,30 +277,47 @@ class Gate:
         The lease check as observed: live (and, for a store with allows(lease, effect), covering this
         effect), plus the store's own record of the grant when it has describe(lease).
         """
-        allows, describe = getattr(self.leases, "allows", None), getattr(self.leases, "describe", None)
+        allows, describe = (
+            getattr(self.leases, "allows", None),
+            getattr(self.leases, "describe", None),
+        )
         describe_effect = getattr(self.leases, "describe_effect", None)
-        return {"lease_live": bool(allows(lease, effect) if allows else self.leases.is_live(lease)),
-                "lease": describe_effect(lease, effect) if describe_effect else describe(lease) if describe else None}
+        return {
+            "lease_live": bool(allows(lease, effect) if allows else self.leases.is_live(lease)),
+            "lease": describe_effect(lease, effect)
+            if describe_effect
+            else describe(lease)
+            if describe
+            else None,
+        }
 
     def _resend(self, eid, effect, status, owner, requery=False, **commit):
         """status once the resend commits; a target's rejection is settled here, so no later pass sends it again."""
         if not self.journal.claim(eid, owner, self.claim_ttl):
-            return "IN_FLIGHT"                  # a slow lookup outlived our claim and another recovery took over
+            return "IN_FLIGHT"  # a slow lookup outlived our claim and another recovery took over
         if not open_dispatch(self.journal.entries(eid)):
-            return None                         # a previous owner finished while the lookup was running
+            return None  # a previous owner finished while the lookup was running
         if requery:
             # Our claim may have expired during the lookup, and another recovery may have sent and then lost
             # its own claim without resolving. A lookup made while we hold the claim again is the one to act on.
             found = self.target.query(eid, effect)
             if found:
-                self.journal.append("COMMITTED", eid, via="recovery-query", rechecked=commit.get("rechecked"), found=found)
+                self.journal.append(
+                    "COMMITTED",
+                    eid,
+                    via="recovery-query",
+                    rechecked=commit.get("rechecked"),
+                    found=found,
+                )
                 return "COMMITTED_ON_QUERY"
         try:
             result = self.target.apply(eid, effect)
         except Rejected as e:
             return self.settle_failed(eid, str(e))
         except Exception as e:
-            e.interlock_sent = True     # the request may have reached the target: recover() keeps the claim
+            e.interlock_sent = (
+                True  # the request may have reached the target: recover() keeps the claim
+            )
             raise
         self.journal.append("COMMITTED", eid, **commit, result=result)
         return status
@@ -241,8 +340,9 @@ class Gate:
         checks = self._lease_seen(dispatched.get("lease"), dispatched["effect"])
         if not checks["lease_live"]:
             return checks, "lease", [], []
-        checks["violations"], changes, repairs = self._premises(dispatched.get("premises"), dispatched["effect_id"],
-                                                                dispatched["effect"])
+        checks["violations"], changes, repairs = self._premises(
+            dispatched.get("premises"), dispatched["effect_id"], dispatched["effect"]
+        )
         return checks, "stale_premise" if checks["violations"] else None, changes, repairs
 
     def recover(self, now=None, only=None):
@@ -267,12 +367,14 @@ class Gate:
             if only is not None and eid not in only:
                 continue
             if not self.journal.claim(eid, owner, self.claim_ttl):
-                continue                                        # being sent or recovered by someone else
+                continue  # being sent or recovered by someone else
             try:
                 status = self._recover_one(eid, now, owner)
-            except Exception as e:                              # one bad effect must not strand the others
+            except Exception as e:  # one bad effect must not strand the others
                 status = f"UNRESOLVED:{type(e).__name__}"
-                if not getattr(e, "interlock_sent", False):     # nothing was sent: the next attempt may go now
+                if not getattr(
+                    e, "interlock_sent", False
+                ):  # nothing was sent: the next attempt may go now
                     self.journal.release(eid, owner)
             else:
                 self.journal.release(eid, owner)
@@ -283,30 +385,58 @@ class Gate:
     def _recover_one(self, eid, now, owner):
         es = self.journal.entries(eid)
         if not open_dispatch(es):
-            return None                                         # resolved while we were claiming
+            return None  # resolved while we were claiming
         d = [e for e in es if e["kind"] == "DISPATCHED"][-1]
         effect, tier, queryable = d["effect"], self.target.tier, self._queryable
-        if tier == 1 and now - d["ts"] > getattr(self.target, "dedup_window", float("inf")) - DEDUP_MARGIN:
-            tier = 2 if queryable else 3                        # provider forgot (or may have forgotten) the key
+        if (
+            tier == 1
+            and now - d["ts"] > getattr(self.target, "dedup_window", float("inf")) - DEDUP_MARGIN
+        ):
+            tier = 2 if queryable else 3  # provider forgot (or may have forgotten) the key
         if tier == 3:
-            self.journal.append("AMBIGUOUS", eid, code="ambiguous")   # cannot know; refuse to guess
+            self.journal.append("AMBIGUOUS", eid, code="ambiguous")  # cannot know; refuse to guess
             return "AMBIGUOUS"
         checks, stale, changes, repairs = self._recheck(d)
-        if tier == 1 and not stale:                             # idempotent: safe to retry
-            return self._resend(eid, effect, "COMMITTED_BY_RETRY", owner, via="retry-idempotent", rechecked=checks)
-        if not queryable:                                       # stale, and no way to see what landed: no repairs
-            self.journal.append("AMBIGUOUS", eid, code="ambiguous", reason=f"{stale} at recovery, no lookup", rechecked=checks,
-                                **_nonempty(changes=changes))
+        if tier == 1 and not stale:  # idempotent: safe to retry
+            return self._resend(
+                eid, effect, "COMMITTED_BY_RETRY", owner, via="retry-idempotent", rechecked=checks
+            )
+        if not queryable:  # stale, and no way to see what landed: no repairs
+            self.journal.append(
+                "AMBIGUOUS",
+                eid,
+                code="ambiguous",
+                reason=f"{stale} at recovery, no lookup",
+                rechecked=checks,
+                **_nonempty(changes=changes),
+            )
             return "AMBIGUOUS"
-        found = self.target.query(eid, effect)                  # ask the target what it has
-        if found:                                               # the earlier send landed; a failed re-check does not undo it
-            self.journal.append("COMMITTED", eid, via="recovery-query", rechecked=checks, found=found)
+        found = self.target.query(eid, effect)  # ask the target what it has
+        if found:  # the earlier send landed; a failed re-check does not undo it
+            self.journal.append(
+                "COMMITTED", eid, via="recovery-query", rechecked=checks, found=found
+            )
             return "COMMITTED_ON_QUERY"
         if stale:
-            self.journal.append("REFUSED", eid, code=f"{stale}_at_recovery", reason=f"{stale} at recovery", resolves=True, rechecked=checks,
-                                **_nonempty(changes=changes, repairs=repairs))   # the lookup found nothing landed
+            self.journal.append(
+                "REFUSED",
+                eid,
+                code=f"{stale}_at_recovery",
+                reason=f"{stale} at recovery",
+                resolves=True,
+                rechecked=checks,
+                **_nonempty(changes=changes, repairs=repairs),
+            )  # the lookup found nothing landed
             return f"REFUSED:{stale}_at_recovery"
-        return self._resend(eid, effect, "REAPPLIED_AFTER_QUERY", owner, requery=True, via="recovery-reapply", rechecked=checks)
+        return self._resend(
+            eid,
+            effect,
+            "REAPPLIED_AFTER_QUERY",
+            owner,
+            requery=True,
+            via="recovery-reapply",
+            rechecked=checks,
+        )
 
     def settle_failed(self, eid, reason):
         """
@@ -320,13 +450,21 @@ class Gate:
         d = [e for e in es if e["kind"] == "DISPATCHED"][-1]
         try:
             landed = self._queryable and self.target.query(eid, d["effect"])
-        except Exception as e:                  # the lookup failed: take the target at its word, never leave it open
+        except (
+            Exception
+        ) as e:  # the lookup failed: take the target at its word, never leave it open
             landed, reason = False, f"{reason} (lookup failed: {e})"
         if landed:
             self.journal.append("COMMITTED", eid, via="failed-but-landed")
             status = "COMMITTED_ON_QUERY"
         else:
-            self.journal.append("REFUSED", eid, code="target_error", reason=f"target reported failure: {reason}", resolves=True)
+            self.journal.append(
+                "REFUSED",
+                eid,
+                code="target_error",
+                reason=f"target reported failure: {reason}",
+                resolves=True,
+            )
             status = "REFUSED:target_error"
         self.journal.release(eid, self.sender)
         return status
@@ -337,6 +475,7 @@ class Gate:
     def receipt_bundle(self, proposal, key=None):
         """Every journal entry for this effect, hash-chained and optionally signed. See receipts.verify()."""
         from .receipts import bundle
+
         return bundle(self.journal, effect_id_for(proposal), key)
 
 
@@ -346,18 +485,22 @@ class Naive:
     No journal, no premises, no lease re-check. A retry is "do it again",
     and a re-run re-asks the model, so the retry may carry a different payload.
     """
+
     def __init__(self, target):
         self.target = target
 
     def submit(self, proposal, crash_after_effect=False, crash_before_effect=False):
         import uuid
+
         if crash_before_effect:
             raise SimulatedCrash("naive")
-        self.target.apply(uuid.uuid4().hex[:12], proposal["effect"], crash_after_effect)  # fresh id per attempt
+        self.target.apply(
+            uuid.uuid4().hex[:12], proposal["effect"], crash_after_effect
+        )  # fresh id per attempt
         return "APPLIED"
 
     def recover(self, now=None):
-        return {}      # no memory; the caller just retries
+        return {}  # no memory; the caller just retries
 
 
 class IdempotencyOnly:
@@ -367,17 +510,21 @@ class IdempotencyOnly:
     This is "just use Stripe idempotency keys". It establishes what the service
     alone gives you, so the agent runtime's additions are measured, not assumed.
     """
+
     def __init__(self, target):
         self.target = target
 
     def submit(self, proposal, crash_after_effect=False, crash_before_effect=False):
         if crash_before_effect:
             raise SimulatedCrash("idem")
-        return "APPLIED:" + str(self.target.apply(effect_id_for(proposal), proposal["effect"],
-                                                  crash_after_effect).get("status"))
+        return "APPLIED:" + str(
+            self.target.apply(effect_id_for(proposal), proposal["effect"], crash_after_effect).get(
+                "status"
+            )
+        )
 
     def recover(self, now=None):
-        return {}      # no journal; the caller retries with the same key
+        return {}  # no journal; the caller retries with the same key
 
 
 class DurableExecution:
@@ -389,10 +536,11 @@ class DurableExecution:
     idempotency key. No lease or premise check: the engine replays the decision it
     already made. Run it against a tier-1 target, its best case.
     """
+
     def __init__(self, target):
         self.target = target
-        self.completed = {}    # effect id -> recorded result (the event history)
-        self.started = {}      # effect id -> effect, for steps with no recorded result
+        self.completed = {}  # effect id -> recorded result (the event history)
+        self.started = {}  # effect id -> effect, for steps with no recorded result
 
     def submit(self, proposal, crash_after_effect=False, crash_before_effect=False):
         eid = effect_id_for(proposal)
@@ -408,7 +556,7 @@ class DurableExecution:
 
     def recover(self, now=None):
         out = {}
-        for eid, effect in list(self.started.items()):     # at-least-once: re-run the step
+        for eid, effect in list(self.started.items()):  # at-least-once: re-run the step
             out[eid] = "RERUN:" + str(self.target.apply(eid, effect).get("status"))
             self.completed[eid] = out[eid]
             del self.started[eid]

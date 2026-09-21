@@ -5,6 +5,7 @@ An agent is authorized at decision time and its effect lands later. Between
 those two instants the grant can be revoked. So the gate checks the lease at
 DISPATCH, not only at PROPOSED.
 """
+
 import time
 
 

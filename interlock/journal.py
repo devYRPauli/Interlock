@@ -35,15 +35,25 @@ Three decisions must be atomic across workers, and are on both backends:
 A claim expires after its ttl, so a crashed sender or recoverer cannot block an effect forever.
 A send, and a resend during recovery, must finish inside that ttl: time targets out sooner.
 """
-import contextlib, errno, hashlib, json, os, sqlite3, threading, time
+
+import contextlib
+import errno
+import hashlib
+import json
+import os
+import sqlite3
+import threading
+import time
+
 from .escalation import closed, latest
+
 try:
     import fcntl
-except ImportError:                     # Windows uses a byte-range lock on the same sidecar
+except ImportError:  # Windows uses a byte-range lock on the same sidecar
     fcntl = None
     import msvcrt
 
-CLAIM_TTL = 120                         # seconds
+CLAIM_TTL = 120  # seconds
 
 
 def _plain(value):
@@ -85,13 +95,19 @@ class _Queries:
         unresolved = ambiguous or open_dispatch(es)
         return {
             "effect_id": effect_id,
-            "proposed":   "PROPOSED"   in kinds,
+            "proposed": "PROPOSED" in kinds,
             "authorized": "AUTHORIZED" in kinds,
-            "executed":   True if committed else "unknown" if unresolved else False,
-            "recorded":   committed,
-            "final":      "COMMITTED" if committed else "AMBIGUOUS" if ambiguous else (kinds[-1] if kinds else None),
-            "authority":  next((e.get("lease") for e in reversed(es) if e["kind"] == "DISPATCHED"),
-                               next((e.get("lease") for e in es if e["kind"] == "AUTHORIZED"), None)),
+            "executed": True if committed else "unknown" if unresolved else False,
+            "recorded": committed,
+            "final": "COMMITTED"
+            if committed
+            else "AMBIGUOUS"
+            if ambiguous
+            else (kinds[-1] if kinds else None),
+            "authority": next(
+                (e.get("lease") for e in reversed(es) if e["kind"] == "DISPATCHED"),
+                next((e.get("lease") for e in es if e["kind"] == "AUTHORIZED"), None),
+            ),
         }
 
 
@@ -100,12 +116,14 @@ def _canonical(entry):
 
 
 def entry_hash(entry):
-    return hashlib.sha256(_canonical({k: v for k, v in entry.items() if k != "hash"}).encode()).hexdigest()
+    return hashlib.sha256(
+        _canonical({k: v for k, v in entry.items() if k != "hash"}).encode()
+    ).hexdigest()
 
 
 def _seal(entry, previous):
     """Chain the entry to this effect's previous entry, so edits, deletions and reordering show."""
-    entry = _plain(entry)                                   # hash exactly what will be stored
+    entry = _plain(entry)  # hash exactly what will be stored
     entry["prev"] = previous.get("hash") if previous else None
     entry["hash"] = entry_hash(entry)
     return entry
@@ -121,7 +139,9 @@ def open_dispatch(entries):
     for e in entries:
         if e["kind"] == "DISPATCHED":
             open_ = True
-        elif e["kind"] in ("COMMITTED", "AMBIGUOUS") or (e["kind"] == "REFUSED" and e.get("resolves")):
+        elif e["kind"] in ("COMMITTED", "AMBIGUOUS") or (
+            e["kind"] == "REFUSED" and e.get("resolves")
+        ):
             open_ = False
     return open_
 
@@ -147,14 +167,25 @@ def dispatch_blocker(entries, effect, lease=None, premises=None):
         return "conflicting_payload"
     if closed(entries):
         return "closed"
-    settled = [i for i, e in enumerate(entries) if e["kind"] == "REFUSED" and e.get("code") == "target_error" and e.get("resolves")]
-    if settled and not any(e["kind"] == "ESCALATED" for e in entries[settled[-1] + 1:]):
-        return "target_error"           # the target said it failed, but it may have landed: only a person sends it again
+    settled = [
+        i
+        for i, e in enumerate(entries)
+        if e["kind"] == "REFUSED" and e.get("code") == "target_error" and e.get("resolves")
+    ]
+    if settled and not any(e["kind"] == "ESCALATED" for e in entries[settled[-1] + 1 :]):
+        return "target_error"  # the target said it failed, but it may have landed: only a person sends it again
     esc, dec = latest(entries)
     if esc is not None:
-        ok = (isinstance(lease, dict) and lease.get("escalation") == esc["hash"] and dec is not None
-              and dec["decision"] == "approve" and dec["by"] == lease.get("by") and dec["at"] == lease.get("at")
-              and lease.get("group") == esc["group"] and _plain(premises) == esc["facts"])
+        ok = (
+            isinstance(lease, dict)
+            and lease.get("escalation") == esc["hash"]
+            and dec is not None
+            and dec["decision"] == "approve"
+            and dec["by"] == lease.get("by")
+            and dec["at"] == lease.get("at")
+            and lease.get("group") == esc["group"]
+            and _plain(premises) == esc["facts"]
+        )
         if not ok:
             return "awaiting_decision"
     return None
@@ -215,11 +246,14 @@ class Journal(_Queries):
         with self._exclusive():
             self._drop_torn_tail()
             prior = self.entries(effect_id)
-            entry = _seal({"ts": time.time(), "kind": kind, "effect_id": effect_id, **data}, prior[-1] if prior else None)
+            entry = _seal(
+                {"ts": time.time(), "kind": kind, "effect_id": effect_id, **data},
+                prior[-1] if prior else None,
+            )
             with open(self.path, "a") as f:
                 f.write(json.dumps(entry) + "\n")
                 f.flush()
-                os.fsync(f.fileno())        # durable before we return
+                os.fsync(f.fileno())  # durable before we return
         return entry
 
     def append_if(self, kind, effect_id, check, **data):
@@ -234,7 +268,7 @@ class Journal(_Queries):
     def entries(self, effect_id=None):
         with self._exclusive(), open(self.path, "rb") as f:
             data = f.read()
-        complete = data[:data.rfind(b"\n") + 1]              # ignore a torn final line
+        complete = data[: data.rfind(b"\n") + 1]  # ignore a torn final line
         es = [json.loads(line) for line in complete.splitlines() if line.strip()]
         return [e for e in es if effect_id is None or e["effect_id"] == effect_id]
 
@@ -251,12 +285,14 @@ class Journal(_Queries):
             json.dump(claims, f)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, self.path + ".claims")               # never a half-written claims file
+        os.replace(tmp, self.path + ".claims")  # never a half-written claims file
 
     def dispatch(self, effect_id, effect, owner, ttl=CLAIM_TTL, **data):
         """Write DISPATCHED and claim the effect for `owner`, unless blocked. Returns the blocker, or None."""
         with self._exclusive():
-            blocker = dispatch_blocker(self.entries(effect_id), effect, data.get("lease"), data.get("premises"))
+            blocker = dispatch_blocker(
+                self.entries(effect_id), effect, data.get("lease"), data.get("premises")
+            )
             if blocker:
                 return blocker
             self.append("DISPATCHED", effect_id, effect=effect, **data)
@@ -287,14 +323,22 @@ class Journal(_Queries):
 class SqliteJournal(_Queries):
     def __init__(self, path):
         self.path = path
-        for attempt in range(100):              # many workers may open the same new database at once
+        for attempt in range(100):  # many workers may open the same new database at once
             try:
                 with contextlib.closing(sqlite3.connect(self.path, timeout=30)) as db, db:
-                    db.execute("PRAGMA journal_mode=WAL")   # a property of the file: set once here, never per connection
-                    db.execute("CREATE TABLE IF NOT EXISTS entries (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
-                               "effect_id TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL)")
-                    db.execute("CREATE INDEX IF NOT EXISTS entries_by_effect ON entries (effect_id, seq)")
-                    db.execute("CREATE TABLE IF NOT EXISTS claims (effect_id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires REAL NOT NULL)")
+                    db.execute(
+                        "PRAGMA journal_mode=WAL"
+                    )  # a property of the file: set once here, never per connection
+                    db.execute(
+                        "CREATE TABLE IF NOT EXISTS entries (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "effect_id TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL)"
+                    )
+                    db.execute(
+                        "CREATE INDEX IF NOT EXISTS entries_by_effect ON entries (effect_id, seq)"
+                    )
+                    db.execute(
+                        "CREATE TABLE IF NOT EXISTS claims (effect_id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires REAL NOT NULL)"
+                    )
                 return
             except sqlite3.OperationalError as e:
                 if "locked" not in str(e) or attempt == 99:
@@ -303,15 +347,23 @@ class SqliteJournal(_Queries):
 
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=30)
-        db.execute("PRAGMA synchronous=FULL")    # durable before we return, like the fsync above
+        db.execute("PRAGMA synchronous=FULL")  # durable before we return, like the fsync above
         return db
 
     @staticmethod
     def _insert(db, kind, effect_id, data):
         """Call inside BEGIN IMMEDIATE, so the chain link and the insert are one step."""
-        row = db.execute("SELECT body FROM entries WHERE effect_id = ? ORDER BY seq DESC LIMIT 1", (effect_id,)).fetchone()
-        entry = _seal({"ts": time.time(), "kind": kind, "effect_id": effect_id, **data}, json.loads(row[0]) if row else None)
-        db.execute("INSERT INTO entries (effect_id, kind, body) VALUES (?, ?, ?)", (effect_id, kind, json.dumps(entry)))
+        row = db.execute(
+            "SELECT body FROM entries WHERE effect_id = ? ORDER BY seq DESC LIMIT 1", (effect_id,)
+        ).fetchone()
+        entry = _seal(
+            {"ts": time.time(), "kind": kind, "effect_id": effect_id, **data},
+            json.loads(row[0]) if row else None,
+        )
+        db.execute(
+            "INSERT INTO entries (effect_id, kind, body) VALUES (?, ?, ?)",
+            (effect_id, kind, json.dumps(entry)),
+        )
         return entry
 
     def append(self, kind, effect_id, **data):
@@ -325,7 +377,7 @@ class SqliteJournal(_Queries):
     def append_if(self, kind, effect_id, check, **data):
         with contextlib.closing(self._connect()) as db:
             db.isolation_level = None
-            db.execute("BEGIN IMMEDIATE")            # takes the write lock before reading
+            db.execute("BEGIN IMMEDIATE")  # takes the write lock before reading
             blocker = check(self._chain(db, effect_id))
             if blocker:
                 db.execute("ROLLBACK")
@@ -336,27 +388,38 @@ class SqliteJournal(_Queries):
 
     @staticmethod
     def _chain(db, effect_id):
-        return [json.loads(b) for (b,) in db.execute("SELECT body FROM entries WHERE effect_id = ? ORDER BY seq", (effect_id,))]
+        return [
+            json.loads(b)
+            for (b,) in db.execute(
+                "SELECT body FROM entries WHERE effect_id = ? ORDER BY seq", (effect_id,)
+            )
+        ]
 
     def entries(self, effect_id=None):
         with contextlib.closing(self._connect()) as db:
             if effect_id is None:
                 rows = db.execute("SELECT body FROM entries ORDER BY seq")
             else:
-                rows = db.execute("SELECT body FROM entries WHERE effect_id = ? ORDER BY seq", (effect_id,))
+                rows = db.execute(
+                    "SELECT body FROM entries WHERE effect_id = ? ORDER BY seq", (effect_id,)
+                )
             return [json.loads(body) for (body,) in rows]
 
     def dispatch(self, effect_id, effect, owner, ttl=CLAIM_TTL, **data):
         with contextlib.closing(self._connect()) as db:
             db.isolation_level = None
-            db.execute("BEGIN IMMEDIATE")            # takes the write lock before reading
-            blocker = dispatch_blocker(self._chain(db, effect_id), effect, data.get("lease"), data.get("premises"))
+            db.execute("BEGIN IMMEDIATE")  # takes the write lock before reading
+            blocker = dispatch_blocker(
+                self._chain(db, effect_id), effect, data.get("lease"), data.get("premises")
+            )
             if blocker:
                 db.execute("ROLLBACK")
                 return blocker
             self._insert(db, "DISPATCHED", effect_id, {"effect": effect, **data})
-            db.execute("INSERT OR REPLACE INTO claims (effect_id, owner, expires) VALUES (?, ?, ?)",
-                       (effect_id, owner, time.time() + ttl))
+            db.execute(
+                "INSERT OR REPLACE INTO claims (effect_id, owner, expires) VALUES (?, ?, ?)",
+                (effect_id, owner, time.time() + ttl),
+            )
             db.execute("COMMIT")
             return None
 
@@ -366,8 +429,9 @@ class SqliteJournal(_Queries):
             cur = db.execute(
                 "INSERT INTO claims (effect_id, owner, expires) VALUES (?, ?, ?) "
                 "ON CONFLICT (effect_id) DO UPDATE SET owner = excluded.owner, expires = excluded.expires "
-                "WHERE claims.owner = excluded.owner OR claims.expires <= ?",   # expired at expires == now, as in Journal.claim
-                (effect_id, owner, now + ttl, now))
+                "WHERE claims.owner = excluded.owner OR claims.expires <= ?",  # expired at expires == now, as in Journal.claim
+                (effect_id, owner, now + ttl, now),
+            )
             return cur.rowcount == 1
 
     def release(self, effect_id, owner):
@@ -377,7 +441,9 @@ class SqliteJournal(_Queries):
 
 def open_journal(path):
     """A .db / .sqlite path gets the shared SQLite journal; anything else the JSONL file."""
-    return SqliteJournal(path) if str(path).endswith((".db", ".sqlite", ".sqlite3")) else Journal(path)
+    return (
+        SqliteJournal(path) if str(path).endswith((".db", ".sqlite", ".sqlite3")) else Journal(path)
+    )
 
 
 def effect_id_for(proposal):
@@ -398,5 +464,7 @@ def effect_id_for(proposal):
     effects" are one mechanism and not two.
     """
     key = proposal.get("request_id")
-    canonical = json.dumps(key if key is not None else proposal["effect"], sort_keys=True, default=str)
+    canonical = json.dumps(
+        key if key is not None else proposal["effect"], sort_keys=True, default=str
+    )
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]

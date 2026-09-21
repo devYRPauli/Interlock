@@ -29,7 +29,12 @@ holds its claim for claim_ttl; the callback waits that out rather than risk a se
 
 google.adk is imported only by plugin(); the rest is standard library.
 """
-import asyncio, os, re, time
+
+import asyncio
+import os
+import re
+import time
+
 from ..gate import Gate
 from ..journal import CLAIM_TTL, effect_id_for, open_dispatch, open_journal
 
@@ -55,7 +60,12 @@ class Guard:
         return os.path.join(self.directory, re.sub(r"[^A-Za-z0-9_.-]", "_", tool_name) + ".db")
 
     def _gate(self, tool_name, effect):
-        return Gate(self.gates[tool_name].target_for(effect), self._journal(tool_name), self.leases, self.claim_ttl)
+        return Gate(
+            self.gates[tool_name].target_for(effect),
+            self._journal(tool_name),
+            self.leases,
+            self.claim_ttl,
+        )
 
     async def before_tool_callback(self, tool, args, tool_context):
         """Agent-level callback: None for tools that are not gated, else the gated outcome as the tool response."""
@@ -65,8 +75,11 @@ class Guard:
 
     def run(self, tool_name, args, tool_context):
         p = dict(self.gates[tool_name].proposal(args, tool_context))
-        p.setdefault("agent", f"adk:{getattr(tool_context, 'agent_name', '?')}/{tool_context.invocation_id}/"
-                              f"{tool_context.function_call_id}")
+        p.setdefault(
+            "agent",
+            f"adk:{getattr(tool_context, 'agent_name', '?')}/{tool_context.invocation_id}/"
+            f"{tool_context.function_call_id}",
+        )
         eid, deadline = effect_id_for(p), time.time() + 2 * self.claim_ttl + 10
         journal = open_journal(self._journal(tool_name))
         while True:
@@ -77,7 +90,7 @@ class Guard:
                 gate = self._gate(tool_name, effect)
                 status = gate.recover(only=[eid]).get(eid) or "IN_FLIGHT"
                 if not status.startswith(UNSETTLED) and journal.recorded_effect(eid) != p["effect"]:
-                    status = gate.submit(p)       # record the incoming conflicting payload as a refusal
+                    status = gate.submit(p)  # record the incoming conflicting payload as a refusal
             else:
                 gate = self._gate(tool_name, p["effect"])
                 status = gate.submit(p)
@@ -91,13 +104,16 @@ class Guard:
         for name in self.gates:
             journal = open_journal(self._journal(name))
             for eid in journal.in_flight():
-                effect = [e for e in journal.entries(eid) if e["kind"] == "DISPATCHED"][-1]["effect"]
+                effect = [e for e in journal.entries(eid) if e["kind"] == "DISPATCHED"][-1][
+                    "effect"
+                ]
                 out.update(self._gate(name, effect).recover(only=[eid]))
         return out
 
     def plugin(self, name="interlock"):
         """The same gate as an ADK plugin, so it covers every agent and tool in the app."""
         from google.adk.plugins.base_plugin import BasePlugin
+
         guard = self
 
         class InterlockPlugin(BasePlugin):
@@ -112,12 +128,21 @@ def response(journal, eid, status):
     es = journal.entries(eid)
     committed = next((e for e in es if e["kind"] == "COMMITTED"), None)
     refused = next((e.get("reason") for e in reversed(es) if e["kind"] == "REFUSED"), None)
-    out = {"interlock": status, "effect_id": eid, "sent": True if committed else "unknown" if status == "AMBIGUOUS"
-           or status.startswith(UNSETTLED) else False}
+    out = {
+        "interlock": status,
+        "effect_id": eid,
+        "sent": True
+        if committed
+        else "unknown"
+        if status == "AMBIGUOUS" or status.startswith(UNSETTLED)
+        else False,
+    }
     if committed:
         out["result"] = committed.get("result") or {"found": committed.get("found")}
     elif refused:
         out["refused"] = refused if isinstance(refused, str) else "; ".join(map(str, refused))
-        out["final"] = ("Not a technical error. Do not retry: re-authorizing under the same approval is refused too. "
-                        "A person has to review the case and issue a new approval.")
+        out["final"] = (
+            "Not a technical error. Do not retry: re-authorizing under the same approval is refused too. "
+            "A person has to review the case and issue a new approval."
+        )
     return out

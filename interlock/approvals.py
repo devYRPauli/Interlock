@@ -30,12 +30,32 @@ restarted inbox (or a second one) rebuilds them and never loses or duplicates an
 Two lease stores, never mixed on one chain: Authority (a person approved this exact payload) backs
 Inbox; Envelope (the system of record bounds a payload the agent picks) backs easy and tools.
 """
-import contextlib, hashlib, json, math, sqlite3, time
+
+import contextlib
+import hashlib
+import json
+import math
+import sqlite3
+import time
+
 from .escalation import WHY, closed, diff, explain, latest, record
 from .journal import _plain, effect_id_for, open_dispatch
 
 DONE = ("COMMITTED", "DUPLICATE_IGNORED")
-ITEM = ("why", "detail", "facts", "reason", "changes", "repairs", "route", "group", "routed_to", "level", "due", "breach")
+ITEM = (
+    "why",
+    "detail",
+    "facts",
+    "reason",
+    "changes",
+    "repairs",
+    "route",
+    "group",
+    "routed_to",
+    "level",
+    "due",
+    "breach",
+)
 
 
 def _finite_number(value):
@@ -68,22 +88,34 @@ class Envelope:
     An attempt is the approval's "attempt" key when present (easy.py puts the request id there, so the
     same arguments re-sent after a refusal count again), otherwise a hash of the effect.
     """
+
     def __init__(self, path, fields=lambda effect: effect, clock=time.time, attempts=None):
         self.path, self.fields, self.clock, self.attempts = path, fields, clock, attempts
         with self._db() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS sends (approval TEXT PRIMARY KEY, effect_id TEXT NOT NULL, at REAL NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS revoked (approval TEXT PRIMARY KEY, at REAL NOT NULL, by TEXT)")
-            db.execute("CREATE TABLE IF NOT EXISTS attempts (approval TEXT NOT NULL, attempt TEXT NOT NULL, PRIMARY KEY (approval, attempt))")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS sends (approval TEXT PRIMARY KEY, effect_id TEXT NOT NULL, at REAL NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS revoked (approval TEXT PRIMARY KEY, at REAL NOT NULL, by TEXT)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS attempts (approval TEXT NOT NULL, attempt TEXT NOT NULL, PRIMARY KEY (approval, attempt))"
+            )
 
     @staticmethod
     def _attempt(approval, effect):
         if approval.get("attempt") is not None:
             return str(approval["attempt"])
-        return hashlib.sha256(json.dumps(effect, sort_keys=True, default=str).encode()).hexdigest()[:16]
+        return hashlib.sha256(json.dumps(effect, sort_keys=True, default=str).encode()).hexdigest()[
+            :16
+        ]
 
     @contextlib.contextmanager
     def _db(self):
-        with contextlib.closing(sqlite3.connect(self.path, timeout=30)) as db, db:   # commits on success
+        with (
+            contextlib.closing(sqlite3.connect(self.path, timeout=30)) as db,
+            db,
+        ):  # commits on success
             yield db
 
     def authority(self, approval):
@@ -95,7 +127,9 @@ class Envelope:
             return ["no approval for this action"]
         out, aid = [], approval["id"]
         expires = approval.get("expires")
-        if expires is not None and not _finite_number(expires):     # NaN compares False, so it would never expire
+        if expires is not None and not _finite_number(
+            expires
+        ):  # NaN compares False, so it would never expire
             out.append(f"approval {aid} expiry must be a finite number")
         elif expires is not None and self.clock() > expires:
             out.append(f"approval {aid} has expired")
@@ -104,15 +138,27 @@ class Envelope:
                 out.append(f"approval {aid} was revoked")
         if self.attempts is not None:
             with self._db() as db:
-                tried = [a for (a,) in db.execute("SELECT attempt FROM attempts WHERE approval = ? ORDER BY rowid", (aid,))]
-            over = (len(tried) >= self.attempts if effect is None
-                    else self._attempt(approval, effect) not in tried[:self.attempts] and len(tried) >= self.attempts)
+                tried = [
+                    a
+                    for (a,) in db.execute(
+                        "SELECT attempt FROM attempts WHERE approval = ? ORDER BY rowid", (aid,)
+                    )
+                ]
+            over = (
+                len(tried) >= self.attempts
+                if effect is None
+                else self._attempt(approval, effect) not in tried[: self.attempts]
+                and len(tried) >= self.attempts
+            )
             if over:
                 out.append(f"approval {aid} has had its {self.attempts} attempts")
         if effect is not None:
             f = self.fields(effect)
-            out += [f"{k} must be {v!r}, not {f.get(k)!r}" for k, v in (approval.get("match") or {}).items()
-                    if f.get(k) != v or isinstance(f.get(k), bool) != isinstance(v, bool)]   # True == 1 is not a match
+            out += [
+                f"{k} must be {v!r}, not {f.get(k)!r}"
+                for k, v in (approval.get("match") or {}).items()
+                if f.get(k) != v or isinstance(f.get(k), bool) != isinstance(v, bool)
+            ]  # True == 1 is not a match
             for k, maximum in (approval.get("max") or {}).items():
                 value = f.get(k)
                 if not _finite_number(value) or not _finite_number(maximum):
@@ -123,8 +169,11 @@ class Envelope:
 
     def allows(self, approval, effect):
         if self.attempts is not None and isinstance(approval, dict) and approval.get("id"):
-            with self._db() as db:                  # count this attempt before judging it
-                db.execute("INSERT OR IGNORE INTO attempts VALUES (?, ?)", (approval["id"], self._attempt(approval, effect)))
+            with self._db() as db:  # count this attempt before judging it
+                db.execute(
+                    "INSERT OR IGNORE INTO attempts VALUES (?, ?)",
+                    (approval["id"], self._attempt(approval, effect)),
+                )
         return not self.problems(approval, effect)
 
     def is_live(self, approval):
@@ -132,10 +181,16 @@ class Envelope:
 
     def reserve(self, approval, effect_id, effect):
         aid = approval["id"]
-        with self._db() as db:                  # the primary key picks one winner, across processes
-            db.execute("INSERT OR IGNORE INTO sends VALUES (?, ?, ?)", (aid, effect_id, self.clock()))
-            holder = db.execute("SELECT effect_id FROM sends WHERE approval = ?", (aid,)).fetchone()[0]
-        return [] if holder == effect_id else [f"approval {aid} was already used by effect {holder}"]
+        with self._db() as db:  # the primary key picks one winner, across processes
+            db.execute(
+                "INSERT OR IGNORE INTO sends VALUES (?, ?, ?)", (aid, effect_id, self.clock())
+            )
+            holder = db.execute(
+                "SELECT effect_id FROM sends WHERE approval = ?", (aid,)
+            ).fetchone()[0]
+        return (
+            [] if holder == effect_id else [f"approval {aid} was already used by effect {holder}"]
+        )
 
     def describe(self, approval):
         return self.describe_effect(approval, None)
@@ -145,21 +200,29 @@ class Envelope:
         aid = self.authority(approval)
         with self._db() as db:
             row = db.execute("SELECT effect_id FROM sends WHERE approval = ?", (aid,)).fetchone()
-        return {"approval": approval, "used_by": row[0] if row else None, "problems": self.problems(approval, effect)}
+        return {
+            "approval": approval,
+            "used_by": row[0] if row else None,
+            "problems": self.problems(approval, effect),
+        }
 
     def revoke(self, approval_id, by=None):
         with self._db() as db:
-            db.execute("INSERT OR IGNORE INTO revoked VALUES (?, ?, ?)", (approval_id, self.clock(), by))
+            db.execute(
+                "INSERT OR IGNORE INTO revoked VALUES (?, ?, ?)", (approval_id, self.clock(), by)
+            )
 
 
 class Rule:
     """A named check over the request and the facts read for it. False sends it to a person."""
+
     def __init__(self, name, check):
         self.name, self.check = name, check
 
 
 class Route:
     """Where an escalation goes. First match wins; chain[0] gets it, and after sla unanswered the next group."""
+
     def __init__(self, name, chain, when=None, sla=None):
         self.name, self.chain, self.when, self.sla = name, list(chain), when, sla
 
@@ -169,8 +232,14 @@ DEFAULT = Route("default", [None])
 
 class Authority:
     """The lease store the gate consults for approvals: is this authority good right now?"""
+
     def __init__(self, approvers=(), max_age=None, groups=None, clock=time.time):
-        self.approvers, self.max_age, self.groups, self.clock = set(approvers), max_age, groups, clock
+        self.approvers, self.max_age, self.groups, self.clock = (
+            set(approvers),
+            max_age,
+            groups,
+            clock,
+        )
 
     def members(self, group):
         """None is the approvers. An unknown group has nobody, so a bad route fails closed. Read live."""
@@ -196,8 +265,12 @@ def _state(es):
     e, d = latest(es)
     if e and not d:
         return "ESCALATED"
-    since = es[es.index(d) + 1:] if e else es
-    if any(x["kind"] in ("REFUSED", "AMBIGUOUS") and x.get("code") not in ("awaiting_decision", "closed") for x in since):
+    since = es[es.index(d) + 1 :] if e else es
+    if any(
+        x["kind"] in ("REFUSED", "AMBIGUOUS")
+        and x.get("code") not in ("awaiting_decision", "closed")
+        for x in since
+    ):
         return "NEEDS_ESCALATION"
     return "APPROVED" if e else "NEW"
 
@@ -207,19 +280,30 @@ def _by_policy(es):
     sent = [x for x in es if x["kind"] == "DISPATCHED"]
     lease = sent[-1].get("lease") if sent else None
     request = next((x["request"] for x in es if "request" in x), {})
-    return (isinstance(lease, dict) and lease.get("by") == "policy" and "repair_of" not in request
-            and not any(x["kind"] == "ESCALATED" for x in es))
+    return (
+        isinstance(lease, dict)
+        and lease.get("by") == "policy"
+        and "repair_of" not in request
+        and not any(x["kind"] == "ESCALATED" for x in es)
+    )
 
 
 def _unanswered(e, landed=False):
     """A check that e is still the latest escalation and nobody has answered or sent it."""
+
     def check(es):
         now, d = latest(es)
         if now is None or now["hash"] != e["hash"]:
             return "SUPERSEDED"
-        if d or open_dispatch(es) or closed(es) or (landed and any(x["kind"] in ("COMMITTED", "AMBIGUOUS") for x in es)):
+        if (
+            d
+            or open_dispatch(es)
+            or closed(es)
+            or (landed and any(x["kind"] in ("COMMITTED", "AMBIGUOUS") for x in es))
+        ):
             return "ALREADY_DECIDED"
         return None
+
     return check
 
 
@@ -227,19 +311,25 @@ class Inbox:
     def __init__(self, gate, capture, effect, rules, routes=(), clock=time.time, name="inbox"):
         self.gate, self.capture, self.effect, self.rules = gate, capture, effect, rules
         self.routes, self.clock, self.name = list(routes) or [DEFAULT], clock, name
-        self.queue = {}        # request id -> item waiting for a person
-        self.approved = {}     # request id -> approval recorded but not yet executed
-        self.cleared = []      # request ids executed with no person involved
-        self.sent = {}         # effect id -> (request, sent under policy?); kept for callers, reconcile reads the journal
-        self.log = []          # (request id, event) in order, for the viewer
+        self.queue = {}  # request id -> item waiting for a person
+        self.approved = {}  # request id -> approval recorded but not yet executed
+        self.cleared = []  # request ids executed with no person involved
+        self.sent = {}  # effect id -> (request, sent under policy?); kept for callers, reconcile reads the journal
+        self.log = []  # (request id, event) in order, for the viewer
         self.refresh()
 
     def receipt(self, request_id):
         return self.gate.journal.receipt(effect_id_for({"request_id": request_id}))
 
     def _proposal(self, request, authority, facts):
-        return {"agent": self.name, "lease": authority, "request_id": request["id"],
-                "premises": facts, "effect": self.effect(request), "request": request}
+        return {
+            "agent": self.name,
+            "lease": authority,
+            "request_id": request["id"],
+            "premises": facts,
+            "effect": self.effect(request),
+            "request": request,
+        }
 
     def _chain(self, request_id):
         return self.gate.journal.entries(effect_id_for({"request_id": request_id}))
@@ -261,16 +351,30 @@ class Inbox:
                 yield request, es
 
     def _cache(self, request, es):
-        request = self._request(es) or request               # show what the journal bound, which is what gets sent
+        request = (
+            self._request(es) or request
+        )  # show what the journal bound, which is what gets sent
         rid, state = request["id"], _state(es)
         self.queue.pop(rid, None)
         self.approved.pop(rid, None)
         e, d = latest(es)
         if state == "ESCALATED":
-            self.queue[rid] = {"request": request, **{k: e[k] for k in ITEM}, "escalation": e["hash"]}
+            self.queue[rid] = {
+                "request": request,
+                **{k: e[k] for k in ITEM},
+                "escalation": e["hash"],
+            }
         elif state == "APPROVED":
-            self.approved[rid] = {"request": request, "facts": e["facts"],
-                                  "authority": {"by": d["by"], "at": d["at"], "group": e["group"], "escalation": e["hash"]}}
+            self.approved[rid] = {
+                "request": request,
+                "facts": e["facts"],
+                "authority": {
+                    "by": d["by"],
+                    "at": d["at"],
+                    "group": e["group"],
+                    "escalation": e["hash"],
+                },
+            }
         return state
 
     def _route(self, item):
@@ -278,7 +382,9 @@ class Inbox:
 
     def _write(self, request, check, fields):
         """Append an escalation if check allows, then re-read so the cache matches the journal either way."""
-        entry, _ = self.gate.journal.append_if("ESCALATED", effect_id_for({"request_id": request["id"]}), check, **fields)
+        entry, _ = self.gate.journal.append_if(
+            "ESCALATED", effect_id_for({"request_id": request["id"]}), check, **fields
+        )
         self._cache(request, self._chain(request["id"]))
         if entry:
             self.log.append((request["id"], f"queued: {fields['why']}"))
@@ -310,23 +416,51 @@ class Inbox:
             want, reason, detail, changes, repairs = "NEW", "needs_judgment", failed, [], []
         else:
             esc, e = explain(es), latest(es)[0]
-            want, reason, detail = "NEEDS_ESCALATION", self._refine(esc["reason"], es), esc["status"]
-            shown = (e["facts"] if e else next(x.get("premises") for x in es if x["kind"] == "PROPOSED")) or {}
+            want, reason, detail = (
+                "NEEDS_ESCALATION",
+                self._refine(esc["reason"], es),
+                esc["status"],
+            )
+            shown = (
+                e["facts"] if e else next(x.get("premises") for x in es if x["kind"] == "PROPOSED")
+            ) or {}
             then = {**shown, **{c["field"]: c["now"] for c in esc["changes"]}}
-            changes, repairs = esc["changes"] or diff(shown, facts), esc["repairs"] if facts == then else []
-        route = self._route({"request": request, "facts": facts, "reason": reason, "detail": detail})
+            changes, repairs = (
+                esc["changes"] or diff(shown, facts),
+                esc["repairs"] if facts == then else [],
+            )
+        route = self._route(
+            {"request": request, "facts": facts, "reason": reason, "detail": detail}
+        )
         at, group = self.clock(), route.chain[0]
-        fields = record("ESCALATED", at=at, reason=reason, why=WHY.get(reason, WHY["refused"]), detail=detail,
-                        facts=facts, changes=changes, repairs=repairs, route=route.name, group=group,
-                        routed_to=sorted(self.gate.leases.members(group)), level=0,
-                        due=None if route.sla is None else at + route.sla, breach=False)
+        fields = record(
+            "ESCALATED",
+            at=at,
+            reason=reason,
+            why=WHY.get(reason, WHY["refused"]),
+            detail=detail,
+            facts=facts,
+            changes=changes,
+            repairs=repairs,
+            route=route.name,
+            group=group,
+            routed_to=sorted(self.gate.leases.members(group)),
+            level=0,
+            due=None if route.sla is None else at + route.sla,
+            breach=False,
+        )
         return self._write(request, lambda es: None if _state(es) == want else "moved", fields)
 
     def _send(self, request, authority, facts):
-        self.sent[effect_id_for({"request_id": request["id"]})] = (request, authority.get("by") == "policy")
+        self.sent[effect_id_for({"request_id": request["id"]})] = (
+            request,
+            authority.get("by") == "policy",
+        )
         status = self.gate.submit(self._proposal(request, authority, facts))
         self.log.append((request["id"], status))
-        if status not in DONE and status != "IN_FLIGHT" and not status.startswith("UNRESOLVED"):   # recovery owns those
+        if (
+            status not in DONE and status != "IN_FLIGHT" and not status.startswith("UNRESOLVED")
+        ):  # recovery owns those
             es = self._chain(request["id"])
             if self._cache(request, es) == "NEEDS_ESCALATION":
                 self._escalate(request, es)
@@ -345,20 +479,39 @@ class Inbox:
         if state in ("NEEDS_ESCALATION", "ESCALATED"):
             return "QUEUED"
         if state != "NEW":
-            return {"APPROVED": "APPROVED", "CLOSED": "CLOSED", "DONE": "DUPLICATE_IGNORED", "SENDING": "IN_FLIGHT"}[state]
-        bound = next((x["premises"] for x in es if x["kind"] == "PROPOSED" and x.get("lease") is None), None)
-        if facts is None:                                     # a crash after binding: decide on the facts it was bound
-            facts = self.capture(request) if bound is None else bound   # with, as it would have been without the crash
+            return {
+                "APPROVED": "APPROVED",
+                "CLOSED": "CLOSED",
+                "DONE": "DUPLICATE_IGNORED",
+                "SENDING": "IN_FLIGHT",
+            }[state]
+        bound = next(
+            (x["premises"] for x in es if x["kind"] == "PROPOSED" and x.get("lease") is None), None
+        )
+        if facts is None:  # a crash after binding: decide on the facts it was bound
+            facts = (
+                self.capture(request) if bound is None else bound
+            )  # with, as it would have been without the crash
         failed = [r.name for r in self.rules if not r.check(request, facts)]
         if not failed:
-            status = self._send(request, {"by": "policy", "rules": [r.name for r in self.rules]}, facts)
+            status = self._send(
+                request, {"by": "policy", "rules": [r.name for r in self.rules]}, facts
+            )
             if status == "COMMITTED" and rid not in self.cleared and _by_policy(self._chain(rid)):
                 self.cleared.append(rid)
             return status
         eid = effect_id_for({"request_id": rid})
-        if not es:                                            # bind the payload before a person sees it (I5)
-            _, moved = self.gate.journal.append_if("PROPOSED", eid, lambda es: "moved" if es else None, agent=self.name,
-                                                   lease=None, premises=facts, effect=self.effect(request), request=request)
+        if not es:  # bind the payload before a person sees it (I5)
+            _, moved = self.gate.journal.append_if(
+                "PROPOSED",
+                eid,
+                lambda es: "moved" if es else None,
+                agent=self.name,
+                lease=None,
+                premises=facts,
+                effect=self.effect(request),
+                request=request,
+            )
             if moved:
                 return self._submit(request, facts)
         if not self._escalate(request, self.gate.journal.entries(eid), facts, failed):
@@ -368,7 +521,9 @@ class Inbox:
     def _pending(self, request_id, by, seen, ambiguous=True):
         """(entries, open escalation, its group's members, refusal) for a person about to answer it."""
         if by == "policy":
-            raise ValueError('"policy" is reserved for sends made by the rules; approvals need a person\'s name')
+            raise ValueError(
+                '"policy" is reserved for sends made by the rules; approvals need a person\'s name'
+            )
         es = self._chain(request_id)
         e = latest(es)[0]
         if not es or _state(es) != "ESCALATED":
@@ -382,9 +537,20 @@ class Inbox:
 
     def _decide(self, request_id, e, by, decision, members, repair=None):
         return self.gate.journal.append_if(
-            "DECIDED", effect_id_for({"request_id": request_id}), _unanswered(e, landed=decision == "repair"),
-            **record("DECIDED", at=self.clock(), by=by, decision=decision, escalation=e["hash"], group=e["group"],
-                     members=sorted(members), repair=repair))
+            "DECIDED",
+            effect_id_for({"request_id": request_id}),
+            _unanswered(e, landed=decision == "repair"),
+            **record(
+                "DECIDED",
+                at=self.clock(),
+                by=by,
+                decision=decision,
+                escalation=e["hash"],
+                group=e["group"],
+                members=sorted(members),
+                repair=repair,
+            ),
+        )
 
     def approve(self, request_id, by, execute=True, seen=None, _repair=None):
         """Record a person's approval against the facts they saw. execute=False sends it later."""
@@ -395,8 +561,11 @@ class Inbox:
         if blocker:
             return blocker
         self.queue.pop(request_id, None)
-        self.approved[request_id] = {"request": self._request(es), "facts": e["facts"],
-                                     "authority": {"by": by, "at": d["at"], "group": e["group"], "escalation": e["hash"]}}
+        self.approved[request_id] = {
+            "request": self._request(es),
+            "facts": e["facts"],
+            "authority": {"by": by, "at": d["at"], "group": e["group"], "escalation": e["hash"]},
+        }
         self.log.append((request_id, f"approved by {by}"))
         return self.execute(request_id) if execute else "APPROVED"
 
@@ -441,28 +610,62 @@ class Inbox:
         if not 0 <= index < len(e["repairs"]):
             return "REFUSED:no_repair"
         r = e["repairs"][index]
-        if not r["set"]:                                      # same payload: an approval, recorded as the accepted repair
-            return self.approve(request_id, by, execute, seen=e["hash"],
-                                _repair={"code": r["code"], "set": {}, "request_id": request_id})
+        if not r["set"]:  # same payload: an approval, recorded as the accepted repair
+            return self.approve(
+                request_id,
+                by,
+                execute,
+                seen=e["hash"],
+                _repair={"code": r["code"], "set": {}, "request_id": request_id},
+            )
         request = self._request(es)
-        child = {**request, **r["set"], "id": f"{request_id}:repair:{e['hash'][:8]}", "repair_of": request_id}
+        child = {
+            **request,
+            **r["set"],
+            "id": f"{request_id}:repair:{e['hash'][:8]}",
+            "repair_of": request_id,
+        }
         if _plain(self.effect(child)) != _plain({**self.effect(request), **r["set"]}):
             return "REFUSED:repair_not_expressible"
         facts = _plain(self.capture(child))
-        if facts != e["facts"]:                               # the suggestion is stale: show the change, suggest nothing
-            self._write(request, _unanswered(e), record(
-                "ESCALATED", at=self.clock(), reason=e["reason"], why=e["why"], detail=e["detail"], facts=facts,
-                changes=diff(e["facts"], facts), repairs=[], route=e["route"], group=e["group"],
-                routed_to=sorted(members), level=e["level"], due=e["due"], breach=False))
+        if facts != e["facts"]:  # the suggestion is stale: show the change, suggest nothing
+            self._write(
+                request,
+                _unanswered(e),
+                record(
+                    "ESCALATED",
+                    at=self.clock(),
+                    reason=e["reason"],
+                    why=e["why"],
+                    detail=e["detail"],
+                    facts=facts,
+                    changes=diff(e["facts"], facts),
+                    repairs=[],
+                    route=e["route"],
+                    group=e["group"],
+                    routed_to=sorted(members),
+                    level=e["level"],
+                    due=e["due"],
+                    breach=False,
+                ),
+            )
             return "SUPERSEDED"
-        _, blocker = self._decide(request_id, e, by, "repair", members,
-                                  {"code": r["code"], "set": r["set"], "request_id": child["id"]})
+        _, blocker = self._decide(
+            request_id,
+            e,
+            by,
+            "repair",
+            members,
+            {"code": r["code"], "set": r["set"], "request_id": child["id"]},
+        )
         if blocker:
             return blocker
         self.queue.pop(request_id, None)
         self.log.append((request_id, f"repaired by {by}: {r['code']}"))
         status = self._submit(child, facts)
-        if status == "QUEUED" and by in self.gate.leases.members(latest(self._chain(child["id"]))[0]["group"]):
+        if status == "QUEUED" and by in self.gate.leases.members(
+            latest(self._chain(child["id"]))[0]["group"]
+        ):
             return self.approve(child["id"], by, execute)
         return status
 
@@ -496,12 +699,25 @@ class Inbox:
         facts = _plain(self.capture(request))
         while e["due"] is not None and e["due"] <= now:
             up = e["level"] + 1 < len(chain)
-            group, level = (chain[e["level"] + 1], e["level"] + 1) if up else (e["group"], e["level"])
-            fields = record("ESCALATED", at=now, reason=e["reason"], why=e["why"], detail=e["detail"], facts=facts,
-                            changes=diff(e["facts"], facts) or e["changes"],
-                            repairs=e["repairs"] if facts == e["facts"] else [], route=e["route"], group=group,
-                            routed_to=sorted(self.gate.leases.members(group)), level=level,
-                            due=e["due"] + route.sla if up and route.sla is not None else None, breach=True)
+            group, level = (
+                (chain[e["level"] + 1], e["level"] + 1) if up else (e["group"], e["level"])
+            )
+            fields = record(
+                "ESCALATED",
+                at=now,
+                reason=e["reason"],
+                why=e["why"],
+                detail=e["detail"],
+                facts=facts,
+                changes=diff(e["facts"], facts) or e["changes"],
+                repairs=e["repairs"] if facts == e["facts"] else [],
+                route=e["route"],
+                group=group,
+                routed_to=sorted(self.gate.leases.members(group)),
+                level=level,
+                due=e["due"] + route.sla if up and route.sla is not None else None,
+                breach=True,
+            )
             moved = self._write(request, _unanswered(e), fields)
             if not moved:
                 break
@@ -525,8 +741,15 @@ class Inbox:
         elif state == "CLOSED":
             c = closed(es)
             if c["decision"] == "repair" and not self._chain(c["repair"]["request_id"]):
-                child = {**request, **c["repair"]["set"], "id": c["repair"]["request_id"], "repair_of": request["id"]}
-                self._submit(child, next(x["facts"] for x in es if x.get("hash") == c["escalation"]))
+                child = {
+                    **request,
+                    **c["repair"]["set"],
+                    "id": c["repair"]["request_id"],
+                    "repair_of": request["id"],
+                }
+                self._submit(
+                    child, next(x["facts"] for x in es if x.get("hash") == c["escalation"])
+                )
         elif state == "DONE" and _by_policy(es):
             self.cleared.append(request["id"])
 
@@ -536,7 +759,7 @@ class Inbox:
             es = self.gate.journal.entries(eid)
             request = self._request(es)
             if request is None:
-                continue                                   # not ours (another inbox on the same journal)
+                continue  # not ours (another inbox on the same journal)
             self.log.append((request["id"], status))
             if status.startswith("COMMITTED") or status == "REAPPLIED_AFTER_QUERY":
                 if _by_policy(es) and request["id"] not in self.cleared:

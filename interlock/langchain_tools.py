@@ -11,11 +11,13 @@ message otherwise (refused with what changed, already happened once, or not sett
 passes through, and a read of the premises tool is remembered as what the agent decided on (see tools.py).
 Sync tools only. Needs langchain-core; imported only when protect_tools() is called.
 """
+
 from .tools import protect
 
 
 class ToolList(list):
     """The wrapped tools, in the order given. recover() settles what a crash left in flight."""
+
     def __init__(self, tools, protected):
         super().__init__(tools)
         self.protected = protected
@@ -28,15 +30,27 @@ def protect_tools(tools, config):
     from langchain_core.tools import StructuredTool
 
     by_name = {t.name: t for t in tools}
-    protected = protect({name: (lambda _tool=t, **arguments: _tool.invoke(arguments)) for name, t in by_name.items()}, config)
+    protected = protect(
+        {
+            name: (lambda _tool=t, **arguments: _tool.invoke(arguments))
+            for name, t in by_name.items()
+        },
+        config,
+    )
 
     def wrap(name, original):
         def func(**arguments):
             out = protected[name](**arguments)
             if name not in config["tools"]:
                 return out
-            return out["result"] if out["status"] == "COMMITTED" and out["result"] is not None else out["message"]
-        return StructuredTool.from_function(func=func, name=name, description=original.description,
-                                            args_schema=original.args_schema)
+            return (
+                out["result"]
+                if out["status"] == "COMMITTED" and out["result"] is not None
+                else out["message"]
+            )
+
+        return StructuredTool.from_function(
+            func=func, name=name, description=original.description, args_schema=original.args_schema
+        )
 
     return ToolList([wrap(name, t) for name, t in by_name.items()], protected)

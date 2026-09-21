@@ -13,7 +13,13 @@ re-approves.
 
 Standard library only, like the rest of the repo.
 """
-import base64, json, urllib.error, urllib.parse, urllib.request
+
+import base64
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+
 from ..gate import Rejected, SimulatedCrash
 from .payments import fits
 
@@ -45,7 +51,9 @@ def _form(params, prefix=""):
 class StripeClient:
     def __init__(self, api_key):
         if not api_key or not api_key.startswith(("sk_test_", "rk_test_")):
-            raise ValueError("refusing to run: Interlock's Stripe target takes test-mode keys only (sk_test_ or rk_test_)")
+            raise ValueError(
+                "refusing to run: Interlock's Stripe target takes test-mode keys only (sk_test_ or rk_test_)"
+            )
         self._auth = "Basic " + base64.b64encode(f"{api_key}:".encode()).decode()
 
     def request(self, method, path, params=None, idempotency_key=None):
@@ -63,13 +71,23 @@ class StripeClient:
                 return obj
         except urllib.error.HTTPError as e:
             message = json.loads(e.read() or b"{}").get("error", {}).get("message")
-            raise (StripeRejected if e.code in (400, 402, 404) else StripeError)(f"{e.code} {method} {path}: {message}") from None
+            raise (StripeRejected if e.code in (400, 402, 404) else StripeError)(
+                f"{e.code} {method} {path}: {message}"
+            ) from None
 
     def test_payment(self, amount_cents):
         """A confirmed test-mode card payment to refund against."""
-        return self.request("POST", "/payment_intents", {
-            "amount": amount_cents, "currency": "usd", "payment_method": "pm_card_visa",
-            "payment_method_types": ["card"], "confirm": "true"})["id"]
+        return self.request(
+            "POST",
+            "/payment_intents",
+            {
+                "amount": amount_cents,
+                "currency": "usd",
+                "payment_method": "pm_card_visa",
+                "payment_method_types": ["card"],
+                "confirm": "true",
+            },
+        )["id"]
 
 
 class StripeRefunds:
@@ -81,14 +99,18 @@ class StripeRefunds:
         self.client, self.payment_intent = client, payment_intent
 
     def refunds(self):
-        data = self.client.request("GET", "/refunds", {"payment_intent": self.payment_intent, "limit": 100})["data"]
+        data = self.client.request(
+            "GET", "/refunds", {"payment_intent": self.payment_intent, "limit": 100}
+        )["data"]
         return [r for r in data if r["status"] != "failed"]
 
     def refunded_total(self):
         return sum(r["amount"] for r in self.refunds())
 
     def _by_others(self, eid):
-        return sum(r["amount"] for r in self.refunds() if r["metadata"].get("interlock_effect_id") != eid)
+        return sum(
+            r["amount"] for r in self.refunds() if r["metadata"].get("interlock_effect_id") != eid
+        )
 
     def capture(self):
         # At decision time no refund of this effect exists yet, so every refund, hand refunds included, is someone else's.
@@ -112,25 +134,43 @@ class StripeRefunds:
         repairs = []
         if effect is not None:
             try:
-                total = self.client.request("GET", f"/payment_intents/{self.payment_intent}")["amount_received"]
+                total = self.client.request("GET", f"/payment_intents/{self.payment_intent}")[
+                    "amount_received"
+                ]
                 repairs = fits(effect["amount"], total - now, total)
             except (StripeError, OSError, KeyError):
                 pass
-        return {"violations": violations,
-                "changes": [{"field": "refunded_by_others", "was": was, "now": now}], "repairs": repairs}
+        return {
+            "violations": violations,
+            "changes": [{"field": "refunded_by_others", "was": was, "now": now}],
+            "repairs": repairs,
+        }
 
     def idempotency_key(self, eid):
         return eid
 
     def apply(self, eid, effect, crash_after_effect=False):
-        refund = self.client.request("POST", "/refunds", {
-            "payment_intent": self.payment_intent, "amount": effect["amount"],
-            "metadata": {"interlock_effect_id": eid}}, idempotency_key=self.idempotency_key(eid))
+        refund = self.client.request(
+            "POST",
+            "/refunds",
+            {
+                "payment_intent": self.payment_intent,
+                "amount": effect["amount"],
+                "metadata": {"interlock_effect_id": eid},
+            },
+            idempotency_key=self.idempotency_key(eid),
+        )
         if crash_after_effect:
-            raise SimulatedCrash(eid)                 # Stripe committed; we never record the response
-        return {"status": "already_processed" if refund["_replayed"] else "ok", "refund": refund["id"],
-                "amount": refund["amount"]}
+            raise SimulatedCrash(eid)  # Stripe committed; we never record the response
+        return {
+            "status": "already_processed" if refund["_replayed"] else "ok",
+            "refund": refund["id"],
+            "amount": refund["amount"],
+        }
 
     def query(self, eid, effect):
         """The id of the refund this effect created, or None."""
-        return next((r["id"] for r in self.refunds() if r["metadata"].get("interlock_effect_id") == eid), None)
+        return next(
+            (r["id"] for r in self.refunds() if r["metadata"].get("interlock_effect_id") == eid),
+            None,
+        )

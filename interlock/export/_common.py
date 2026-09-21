@@ -1,5 +1,13 @@
 """Shared by every exporter: stable ids, time formats, the effect's state per entry, auth, one HTTP call."""
-import datetime, hashlib, json, subprocess, time, urllib.error, urllib.request
+
+import datetime
+import hashlib
+import json
+import subprocess
+import time
+import urllib.error
+import urllib.request
+
 from ..journal import _Queries
 
 TERMINAL = ("COMMITTED", "REFUSED", "AMBIGUOUS")
@@ -23,7 +31,9 @@ def span_id(effect_id):
 
 
 def rfc3339(ts):
-    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
 
 
 def nanos(ts):
@@ -49,16 +59,23 @@ def states(entries):
     It depends only on the entries up to that point, so re-exporting a bundle that has grown since
     never changes what an earlier entry says.
     """
-    return [_Prefix(entries[:i + 1]).receipt(entries[0]["effect_id"])["final"] for i in range(len(entries))]
+    return [
+        _Prefix(entries[: i + 1]).receipt(entries[0]["effect_id"])["final"]
+        for i in range(len(entries))
+    ]
 
 
 def who(entries):
     """Authority of the committed send, else of the latest send, else the latest decision if nothing was sent."""
     values = identities(entries)
     pairs = list(zip(entries, values))
-    return next((value for e, value in pairs if e["kind"] == "COMMITTED"),
-                next((value for e, value in reversed(pairs) if e["kind"] == "DISPATCHED"),
-                     values[-1] if values else (None, None)))
+    return next(
+        (value for e, value in pairs if e["kind"] == "COMMITTED"),
+        next(
+            (value for e, value in reversed(pairs) if e["kind"] == "DISPATCHED"),
+            values[-1] if values else (None, None),
+        ),
+    )
 
 
 def identities(entries):
@@ -85,7 +102,9 @@ def gcloud_token():
     """An access token for gcloud's active account. Cached 30 minutes; tokens last an hour."""
     global _token
     if time.time() - _token[0] > 1800:
-        out = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True, timeout=60)
+        out = subprocess.run(
+            ["gcloud", "auth", "print-access-token"], capture_output=True, text=True, timeout=60
+        )
         if out.returncode:
             raise ExportError("gcloud auth print-access-token failed: " + out.stderr.strip()[-300:])
         _token = (time.time(), out.stdout.strip())
@@ -98,7 +117,9 @@ def request_json(url, body=None, token=None, headers=None, method="POST", timeou
     if token:
         h["Authorization"] = "Bearer " + token()
     data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(url, data=data, headers=h, method=method if data is not None else "GET")
+    req = urllib.request.Request(
+        url, data=data, headers=h, method=method if data is not None else "GET"
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             status, raw = r.status, r.read()

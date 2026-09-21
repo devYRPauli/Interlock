@@ -23,7 +23,13 @@ Any of these functions that declares an `idempotency_key` parameter receives the
 id, so `premises` can leave the effect's own result out of its facts. Arguments and facts
 must be JSON-serializable: they are written to the journal.
 """
-import functools, inspect, json, os, re
+
+import functools
+import inspect
+import json
+import os
+import re
+
 from .approvals import Envelope
 from .escalation import diff, render
 from .gate import Gate, SimulatedCrash
@@ -38,6 +44,7 @@ def _call(f, args, eid):
 
 class _FunctionTarget:
     """One decorated function, adapted to the EffectTarget interface in targets/."""
+
     def __init__(self, fn, premises, lookup, dedupes, dedup_window):
         self.fn, self.premises, self.lookup = fn, premises, lookup
         self.tier = 1 if dedupes else 2 if lookup else 3
@@ -47,7 +54,7 @@ class _FunctionTarget:
 
     def facts(self, args, eid):
         raw = _call(self.premises, args, eid) if self.premises else {}
-        return json.loads(json.dumps(raw, default=str))    # compare exactly what the journal stores
+        return json.loads(json.dumps(raw, default=str))  # compare exactly what the journal stores
 
     def validate_premises(self, premises, eid=None):
         return [render(c) for c in diff(premises["facts"], self.facts(premises["args"], eid))]
@@ -55,7 +62,11 @@ class _FunctionTarget:
     def explain(self, premises, eid=None, effect=None):
         """One read per check: violations are rendered from the same diff. A check patched onto the instance still runs."""
         if "validate_premises" in vars(self):
-            return {"violations": self.validate_premises(premises, eid), "changes": [], "repairs": []}
+            return {
+                "violations": self.validate_premises(premises, eid),
+                "changes": [],
+                "repairs": [],
+            }
         changes = diff(premises["facts"], self.facts(premises["args"], eid))
         return {"violations": [render(c) for c in changes], "changes": changes, "repairs": []}
 
@@ -75,8 +86,12 @@ def _redecidable(entries):
     the agent re-decides on current facts, so the same arguments get a new effect id instead of being
     checked forever against the refused attempt's premises.
     """
-    return (bool(entries) and entries[-1]["kind"] == "REFUSED" and entries[-1].get("code") in ("stale_premise", "lease")
-            and not any(e["kind"] == "DISPATCHED" for e in entries))
+    return (
+        bool(entries)
+        and entries[-1]["kind"] == "REFUSED"
+        and entries[-1].get("code") in ("stale_premise", "lease")
+        and not any(e["kind"] == "DISPATCHED" for e in entries)
+    )
 
 
 def _settled(entries):
@@ -88,12 +103,15 @@ def _settled(entries):
         return "DUPLICATE_IGNORED"
     if "AMBIGUOUS" in kinds:
         return "AMBIGUOUS"
-    refused = next((e for e in reversed(entries) if e["kind"] == "REFUSED" and e.get("resolves")), None)
+    refused = next(
+        (e for e in reversed(entries) if e["kind"] == "REFUSED" and e.get("resolves")), None
+    )
     return f"REFUSED:{refused['code']}" if refused else "IN_FLIGHT"
 
 
 class _Allowed:
     """An `allowed(*args)` callable, in the shape of the lease store the gate checks."""
+
     def __init__(self, allowed):
         self.allowed = allowed
 
@@ -107,8 +125,19 @@ class Interlock:
         self.directory, self.claim_ttl = directory, claim_ttl
         self.gates = {}
 
-    def effect(self, key, premises=None, lookup=None, dedupes=False, allowed=None, dedup_window=24 * 3600,
-               approval=None, fields=None, attempts=None, seen=None):
+    def effect(
+        self,
+        key,
+        premises=None,
+        lookup=None,
+        dedupes=False,
+        allowed=None,
+        dedup_window=24 * 3600,
+        approval=None,
+        fields=None,
+        attempts=None,
+        seen=None,
+    ):
         """
         `approval(*args)` returns the approval this call runs under (see approvals.Envelope), read from
         the system of record. With it, the agent may re-decide after a refusal: each distinct set of
@@ -123,27 +152,37 @@ class Interlock:
 
         def wrap(fn):
             name = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{fn.__module__}.{fn.__qualname__}")
-            if name in self.gates:                     # one journal per function: recovery must call the right one
-                raise ValueError(f"an effect named {name} is already registered; give the function a distinct name")
+            if name in self.gates:  # one journal per function: recovery must call the right one
+                raise ValueError(
+                    f"an effect named {name} is already registered; give the function a distinct name"
+                )
             target = _FunctionTarget(fn, premises, lookup, dedupes, dedup_window)
             if approval:
                 names = [p for p in inspect.signature(fn).parameters if p != "idempotency_key"]
                 named = fields or (lambda args: dict(zip(names, args)))
-                leases = Envelope(os.path.join(self.directory, f"{name}.approvals.db"),
-                                  fields=lambda effect: named(effect["args"]), attempts=attempts)
+                leases = Envelope(
+                    os.path.join(self.directory, f"{name}.approvals.db"),
+                    fields=lambda effect: named(effect["args"]),
+                    attempts=attempts,
+                )
             else:
                 leases = _Allowed(allowed)
-            gate = Gate(target, os.path.join(self.directory, f"{name}.jsonl"), leases, claim_ttl=self.claim_ttl)
+            gate = Gate(
+                target,
+                os.path.join(self.directory, f"{name}.jsonl"),
+                leases,
+                claim_ttl=self.claim_ttl,
+            )
             self.gates[name] = gate
 
             def request_id(*args):
                 args = json.loads(json.dumps(list(args)))
                 if not approval:
                     return key(*args)
-                base = f"{key(*args)}:{json.dumps(args, sort_keys=True)}"   # one attempt per distinct decision
+                base = f"{key(*args)}:{json.dumps(args, sort_keys=True)}"  # one attempt per distinct decision
                 rid, n = base, 1
                 while _redecidable(gate.journal.entries(effect_id_for({"request_id": rid}))):
-                    n += 1                             # the same arguments after a refusal are a new decision
+                    n += 1  # the same arguments after a refusal are a new decision
                     rid = f"{base}:{n}"
                 return rid
 
@@ -154,26 +193,41 @@ class Interlock:
                 facts = seen(*args) if seen else None
                 lease = json.loads(json.dumps(approval(*args))) if approval else args
                 if approval and isinstance(lease, dict):
-                    lease["attempt"] = request                 # attempts count per effect id, including base:2
-                return {"agent": name, "lease": lease,
-                        "request_id": request,
-                        "premises": {"args": args, "facts": target.facts(args, eid) if facts is None
-                                     else json.loads(json.dumps(facts, default=str))},
-                        "effect": {"args": args}}
+                    lease["attempt"] = request  # attempts count per effect id, including base:2
+                return {
+                    "agent": name,
+                    "lease": lease,
+                    "request_id": request,
+                    "premises": {
+                        "args": args,
+                        "facts": target.facts(args, eid)
+                        if facts is None
+                        else json.loads(json.dumps(facts, default=str)),
+                    },
+                    "effect": {"args": args},
+                }
 
             def recover_call(request, args):
                 eid = effect_id_for({"request_id": request})
                 recovered = gate.recover(only={eid}).get(eid)
                 entries = gate.journal.entries(eid)
-                status = recovered or _settled(entries)      # another worker may have settled it meanwhile
+                status = recovered or _settled(
+                    entries
+                )  # another worker may have settled it meanwhile
                 recorded = next(e for e in entries if e["kind"] == "PROPOSED")
                 effect = {"args": json.loads(json.dumps(list(args)))}
                 if recorded["effect"] != effect and not open_dispatch(entries):
                     # Settle the original send, then refuse the caller's different payload.
                     # This only records a conflict; no fresh facts or approval are needed.
-                    refused = gate.submit({"agent": name, "request_id": request,
-                                           "lease": recorded["lease"], "premises": recorded["premises"],
-                                           "effect": effect})
+                    refused = gate.submit(
+                        {
+                            "agent": name,
+                            "request_id": request,
+                            "lease": recorded["lease"],
+                            "premises": recorded["premises"],
+                            "effect": effect,
+                        }
+                    )
                     if not recovered:
                         return refused, None
                     # This call's recovery sent or settled the recorded payload: say so, never "refused, nothing happened".
@@ -190,12 +244,13 @@ class Interlock:
                 p = proposal(*args)
                 eid = effect_id_for(p)
                 status = gate.submit(p)
-                if status == "IN_FLIGHT":                # another worker dispatched while proposing
+                if status == "IN_FLIGHT":  # another worker dispatched while proposing
                     return recover_call(p["request_id"], args)
                 return status, target.results.get(eid)
 
             call.gate, call.proposal, call.request_id = gate, proposal, request_id
             return call
+
         return wrap
 
     def recover(self, now=None):

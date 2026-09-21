@@ -12,12 +12,19 @@ Tier 1 with lookup: durable per-effect postimages make retries idempotent. Keep
 may be retried. Pre-upgrade unresolved effects need manual reconciliation before
 using this adapter: older versions did not record their postimages.
 """
-import ast, hashlib, os, stat, uuid
+
+import ast
+import hashlib
+import os
+import stat
+import uuid
+
 from ..gate import SimulatedCrash
 from ..journal import Journal
 
 
-def _h(s): return hashlib.sha256(s.encode() if isinstance(s, str) else s).hexdigest()[:12]
+def _h(s):
+    return hashlib.sha256(s.encode() if isinstance(s, str) else s).hexdigest()[:12]
 
 
 def _read(path, mode="r"):
@@ -27,7 +34,9 @@ def _read(path, mode="r"):
 
 def _write(path, content):
     """Replace a whole file durably; a crash must not leave half a postimage."""
-    path = os.path.realpath(path)             # write through a symlink, as open(path, "w") would, never replace it
+    path = os.path.realpath(
+        path
+    )  # write through a symlink, as open(path, "w") would, never replace it
     existed = os.path.exists(path)
     tmp = os.path.join(os.path.dirname(path), f".interlock-write-{uuid.uuid4().hex}")
     # 0o666 under the umask, as a plain open() creates it (mkstemp would make a new file 0600)
@@ -63,7 +72,11 @@ class LocalRepo:
         table = {}
         for fn in os.listdir(self.path):
             if fn.endswith(".py"):
-                source = originals.get(fn) if originals is not None and fn in originals else _read(os.path.join(self.path, fn))
+                source = (
+                    originals.get(fn)
+                    if originals is not None and fn in originals
+                    else _read(os.path.join(self.path, fn))
+                )
                 if source is None:
                     continue
                 tree = ast.parse(source)
@@ -74,19 +87,29 @@ class LocalRepo:
 
     def capture(self, files_read, symbols_called, mode="symbol"):
         st = self.symbol_table()
-        return {"files": {p: _h(_read(os.path.join(self.path, p), "rb")) for p in files_read}
-                         if mode == "file" else {},
-                "symbols": {s: st.get(s) for s in symbols_called}}
+        return {
+            "files": {p: _h(_read(os.path.join(self.path, p), "rb")) for p in files_read}
+            if mode == "file"
+            else {},
+            "symbols": {s: st.get(s) for s in symbols_called},
+        }
 
     def validate_premises(self, premises, eid=None):
         bad = []
         plan = self._plan(eid) if eid else None
-        originals = {p: plan["before"][p] for p, content in plan["after"].items()
-                     if self._current(p) == content} if plan else {}
+        originals = (
+            {
+                p: plan["before"][p]
+                for p, content in plan["after"].items()
+                if self._current(p) == content
+            }
+            if plan
+            else {}
+        )
         for p, h in premises.get("files", {}).items():
             fp = os.path.join(self.path, p)
             if p in originals and originals[p] is not None and _h(originals[p]) == h:
-                continue                              # this effect changed a file it read
+                continue  # this effect changed a file it read
             if not os.path.exists(fp) or _h(_read(fp, "rb")) != h:
                 bad.append(f"{p} changed since read")
         st = self.symbol_table(originals)
@@ -128,8 +151,13 @@ class LocalRepo:
             plan = self._plan(eid)
             if plan is None:
                 post = self._post(effect)
-                plan = self.effects.append("PREPARED", eid, effect=effect,
-                                           before={p: self._current(p) for p in post}, after=post)
+                plan = self.effects.append(
+                    "PREPARED",
+                    eid,
+                    effect=effect,
+                    before={p: self._current(p) for p in post},
+                    after=post,
+                )
             if plan["effect"] != effect:
                 raise ValueError("repository effect differs from its prepared payload")
             if not self.effects.has("APPLIED", eid):

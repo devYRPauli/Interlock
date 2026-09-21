@@ -1,86 +1,96 @@
 # Interlock
 
-[![test](https://github.com/az-said/Interlock/actions/workflows/test.yml/badge.svg)](https://github.com/az-said/Interlock/actions/workflows/test.yml) · MIT · Python 3.9+ · zero dependencies
+**Recorded decisions and crash recovery for AI agent actions.**
 
-**Interlock gives every action an AI agent takes a receipt: it happened once (or is marked unknown when the service can't be asked), it was authorized when it fired, and the facts it was decided on still held when it landed, even through a crash.**
+[![Tests](https://github.com/az-said/Interlock/actions/workflows/test.yml/badge.svg)](https://github.com/az-said/Interlock/actions/workflows/test.yml) · Python 3.9+ · MIT · Standard-library core
 
-Live demo: [interlock-demo.greenpond-c5ddc6af.westus2.azurecontainerapps.io](https://interlock-demo.greenpond-c5ddc6af.westus2.azurecontainerapps.io) · Landing page: [az-said.github.io/Interlock/site](https://az-said.github.io/Interlock/site/) · Offline: `python3 demo.py 2`
+Interlock sits between an agent and a tool that changes the world. It records the proposed action, checks its authority and assumptions, and keeps a journal that recovery can inspect after a crash. Each action has a receipt describing what was attempted, what was confirmed, and what remains uncertain.
 
-## Why the obvious fix isn't enough
+Originally created by **Said Azaizah and Kiro Moussa**; the canonical project is [az-said/Interlock](https://github.com/az-said/Interlock). The repository includes a local artifact-publication workflow, integration guides, and recorded experiments. Original authorship, the MIT license, and historical evidence are preserved.
 
-Why the obvious fix isn't enough, in one picture. Both columns write to disk before sending and read it back after the crash; the difference is what the entry carries, because **recovery can only re-check what was written down**:
+## Try it locally
 
-```mermaid
-flowchart LR
-    subgraph L["The obvious fix: journal the INTENT"]
-        direction TB
-        L1["agent decides:<br/>refund $20"] --> L2["disk, fsync'd:<br/>&quot;I am sending $20&quot;"]
-        L2 --> L3["send: 💥 crash"]
-        L3 --> L4["restart: my send never landed,<br/>my permission is still live<br/>→ resend $20"]
-        L4 --> L5["$40 refunded ❌<br/>its books balance: nothing alerts"]
-    end
-    MID["⏱️ mid-outage, off camera:<br/>support refunds the $20 by hand.<br/>No ID, no journal entry ,<br/>invisible to every log"]
-    subgraph R["Interlock: journal the REASONS"]
-        direction TB
-        R1["agent decides:<br/>refund $20"] --> R2["disk, fsync'd: &quot;$20 BECAUSE<br/>refunded_total=0, case 4471<br/>allows it, lease live&quot;"]
-        R2 --> R3["send: 💥 crash"]
-        R3 --> R4["restart: re-read the world first ,<br/>refunded_total is now 20:<br/>premise stale"]
-        R4 --> R5["REFUSED, receipt names the change<br/>$20 total ✅ measured on real Stripe"]
-    end
-    MID -.-> L4
-    MID -.-> R4
-    style L5 fill:#7f1d1d,stroke:#f87171,color:#fff
-    style R5 fill:#14532d,stroke:#34d399,color:#fff
-    style MID fill:#78350f,stroke:#f5a524,color:#fff
+```sh
+git clone https://github.com/az-said/Interlock.git
+cd Interlock
+uv run --no-project --python 3.12 python demo.py 2
 ```
 
-The journal records what *you* did. It cannot record what the *world* did while you were down. So the entry has to carry the facts the decision stood on, and recovery has to re-read the world before anything is sent a second time. That one line is the difference between the columns of every results table in [the proof](docs/proof.md).
+The original offline demo shows a side effect committed before a simulated crash, followed by recovery. It needs no credentials or external services. With a suitable Python already installed, `python demo.py 2` also works.
 
-## Install
+The artifact example exercises a concrete workflow: publish a reviewed report, lose the acknowledgement, and recover after another operator publishes a newer report.
 
-```
-pip install git+https://github.com/az-said/Interlock
-```
-
-**1. Python, three lines.** Decorate the function with the side effect and recover on startup.
-
-```python
-from interlock import Interlock
-gate = Interlock(".interlock")
-
-@gate.effect(key=lambda order, amount: f"refund:{order}",
-             premises=lambda order, amount, idempotency_key: {
-                 "refunded_by_others": refunded_total(order, excluding=idempotency_key)},
-             dedupes=True)
-def refund(order, amount, idempotency_key):
-    return stripe.Refund.create(charge=charge_for(order), amount=amount, idempotency_key=idempotency_key)
-
-gate.recover()   # once, on startup
+```sh
+uv run --no-project --python 3.12 python -m examples.artifact_publication.demo
 ```
 
-**2. No code: in front of an MCP server.** `python3 -m interlock.mcp_proxy --config interlock.mcp.json -- <server command>`
+It prints the retained database and receipt location. See the [artifact-publication guide](examples/artifact_publication/README.md) for MCP configuration, operator approvals, verification commands, and limits.
 
-**3. Let your coding agent do it.** Paste [docs/install-with-ai.md](docs/install-with-ai.md) into Claude Code, Cursor, Codex or Copilot.
+## Use the library
 
-Temporal activities, OpenAI and Anthropic tool loops, LangChain and LangGraph, and Google ADK: [docs/integrations.md](docs/integrations.md).
+To install this checkout into a virtual environment:
 
-## Proof
+```sh
+uv venv --python 3.12
+uv pip install --python .venv/bin/python -e .
+```
 
-Seven runs, from simulated faults to real Stripe, real Temporal and a SIGKILLed Google ADK agent, with every id listed: [the proof table](docs/proof.md#seven-runs-one-claim). Tests: [tests/README.md](tests/README.md).
+On Windows, use `.venv/Scripts/python.exe` for the interpreter path. The core has no runtime dependencies; individual framework integrations and the separate PostgreSQL runtime have their own requirements.
 
-## Docs
+| Integration | Entry point | Guide |
+| --- | --- | --- |
+| Python functions | `Interlock.effect(...)` | [Python API](docs/integrations.md) |
+| In-process tool dictionaries | `interlock.tools.protect(...)` | [Tool integrations](docs/integrations.md) |
+| MCP servers | `interlock-mcp --config config.json -- <server command>` | [MCP example](examples/artifact_publication/README.md) |
+| Receipt verification | `interlock-verify receipt.json` | [Receipt implementation and contract](interlock/receipts.py) |
+| Temporal, LangChain, Google ADK, AP2 | Framework-specific adapters | [Integration guide](docs/integrations.md) |
 
-- [How it works](docs/how-it-works.md): the problem, the five rules, the core in code, where it plugs in, the repo map
-- [Proof](docs/proof.md): the results tables, what it costs, what is real and what is not, references
-- [Integrations](docs/integrations.md): every integration, refusals and repair, receipts, escalations
-- [The whole story](docs/00-the-whole-story.md) and the [visual walkthrough](https://az-said.github.io/Interlock/docs/interlock-explained.html)
-- [Live demo, run locally](demo/README.md)
+Register the same effect functions before calling `recover()` on restart. Keep request identities stable and preserve the journal directory. A new request ID or a fresh journal is not a recovery strategy.
 
-## Who built it
+## Guarantees and boundaries
 
-| | |
-|---|---|
-| **Said Azaizah** | [said-azaizah.vercel.app](https://said-azaizah.vercel.app) · [github.com/az-said](https://github.com/az-said) |
-| **Kiro Moussa** | [kiro.city](https://kiro.city) · [https://github.com/kiromoussa](https://github.com/kiromoussa) |
+Recovery depends on what the destination can prove:
 
-MIT licensed. Battle of the Coasts 2026, Cloud AI track, Boston.
+| Destination capability | Recovery behavior |
+| --- | --- |
+| Deduplicates a stable operation ID | May retry within the provider's deduplication window, after required checks. |
+| Can look up a historical operation ID | Queries the original effect and rechecks the recorded decision before a resend. |
+| Neither capability | Records an ambiguous outcome rather than guessing whether a resend is safe. |
+
+A preflight read cannot prevent the destination from changing immediately afterward. The destination must enforce relevant version or authorization constraints atomically with its write. The artifact example demonstrates this with a SQLite transaction.
+
+Receipts describe recorded checks and outcomes. An unsigned hash chain provides internal consistency checks, not independent proof against an operator who can rewrite the journal. Claim expiry also depends on the provider's timing and retry semantics. This is not a universal exactly-once layer for arbitrary APIs.
+
+A careful provider-native implementation can preserve the same effect invariant. The artifact example does not establish a performance or correctness advantage over that baseline. For measured upstream comparisons and known gaps, read the [evidence](docs/proof.md), [weakness audit](docs/11-weakness-audit.md), and [quality plan](docs/11-quality-plan.md). Those documents describe dated runs, not fresh validation of the current checkout.
+
+## Repository guide
+
+| Path | Responsibility |
+| --- | --- |
+| [`interlock/`](interlock/) | Installable gate, journals, approvals, receipts, adapters, and exporters. |
+| [`examples/`](examples/README.md) | Small runnable reference integrations. |
+| [`tests/`](tests/) | Regression and integration tests; shared helpers in `tests/support/`. |
+| [`docs/`](docs/README.md) | Architecture, integration guides, evidence, and historical design notes. |
+| [`runtime/`](runtime/) | Separately packaged PostgreSQL workflow runtime. |
+| [`backend/`](backend/README.md), [`demo/`](demo/README.md) | Hosted-demo application and browser interface. |
+| [`experiments/`](experiments/), [`scenarios/`](scenarios/) | Reproduction harnesses and scenario-specific adapters. |
+| [`results/`](results/), [`viewer/`](viewer/) | Recorded experiment outputs and their viewer. |
+| [`site/`](site/), [`infra/`](infra/) | Upstream landing site and deployment infrastructure. |
+| [`research/`](research/), [`spec/`](spec/) | Research material and specification artifacts. |
+
+The [architecture guide](docs/architecture.md) explains dependency boundaries and compatibility constraints. See [CONTRIBUTING.md](CONTRIBUTING.md) for formatting, linting, strict example type checks, and the test workflow.
+
+## Validate changes
+
+```sh
+uv run --no-project --python 3.12 python -m unittest discover -s tests -v
+```
+
+The suite reports optional SDK and PostgreSQL tests as skipped when their dependencies or services are unavailable. A green offline run does not validate those integrations. [`tests/README.md`](tests/README.md) and [`results/`](results/) contain historical generated evidence; current command output is the source of truth for this checkout.
+
+## Authors and license
+
+- **Said Azaizah** — [GitHub](https://github.com/az-said) · [Website](https://said-azaizah.vercel.app)
+- **Kiro Moussa** — [GitHub](https://github.com/kiromoussa) · [Website](https://kiro.city)
+
+Originally built for Battle of the Coasts 2026, Cloud AI track, Boston. Further contributors are recorded in Git history. Distributed under the original [MIT license](LICENSE).

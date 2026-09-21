@@ -1,5 +1,21 @@
 """Interlock: a commit gate for AI agent effects. See README."""
-from .gate import Gate, Naive, IdempotencyOnly, DurableExecution, Rejected, SimulatedCrash
+
+from .easy import Interlock
+from .gate import DurableExecution, Gate, IdempotencyOnly, Naive, Rejected, SimulatedCrash
 from .journal import Journal, SqliteJournal, effect_id_for, open_journal
 from .leases import Leases
-from .easy import Interlock
+
+__all__ = [
+    "DurableExecution",
+    "Gate",
+    "IdempotencyOnly",
+    "Interlock",
+    "Journal",
+    "Leases",
+    "Naive",
+    "Rejected",
+    "SimulatedCrash",
+    "SqliteJournal",
+    "effect_id_for",
+    "open_journal",
+]

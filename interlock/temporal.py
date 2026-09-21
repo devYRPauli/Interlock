@@ -17,6 +17,7 @@ and only otherwise submits. Outcomes map onto Temporal's retry policy:
 Pass raise_on_refusal=False to get the status string back instead.
 experiments/temporal_live.py runs this on a real Temporal server. temporalio is optional.
 """
+
 from .escalation import describe, explain
 from .journal import effect_id_for
 
@@ -38,7 +39,9 @@ def gated(gate, proposal, raise_on_refusal=True, **submit_flags):
     refused = status.startswith("REFUSED") or status == "AMBIGUOUS"
     if unsettled or refused:
         esc = explain(gate.journal.entries(eid), status) if refused else None
-        msg = f"interlock: {status}" + (f": {describe(esc)}" if esc else "")   # read the status back with outcome()
+        msg = f"interlock: {status}" + (
+            f": {describe(esc)}" if esc else ""
+        )  # read the status back with outcome()
         try:
             from temporalio.exceptions import ApplicationError
         except ImportError:

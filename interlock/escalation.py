@@ -8,10 +8,25 @@ A repair is a new decision: it never reuses the refused effect id, and it goes b
 rules or a person before anything is sent.
 """
 
-FIELDS = {"ESCALATED": ("at", "reason", "why", "detail", "facts", "changes", "repairs",
-                        "route", "group", "routed_to", "level", "due", "breach"),
-          "DECIDED":   ("at", "by", "decision", "escalation", "group", "members", "repair"),
-          "CONFIRMED": ("via", "event", "refund", "status", "amount", "payment_intent", "created")}
+FIELDS = {
+    "ESCALATED": (
+        "at",
+        "reason",
+        "why",
+        "detail",
+        "facts",
+        "changes",
+        "repairs",
+        "route",
+        "group",
+        "routed_to",
+        "level",
+        "due",
+        "breach",
+    ),
+    "DECIDED": ("at", "by", "decision", "escalation", "group", "members", "repair"),
+    "CONFIRMED": ("via", "event", "refund", "status", "amount", "payment_intent", "created"),
+}
 
 WHY = {
     "needs_judgment": "a rule asks a person to decide this",
@@ -58,19 +73,31 @@ def status(entry):
 
 
 def diff(was, now):
-    return [{"field": k, "was": was.get(k), "now": now.get(k)}
-            for k in sorted(set(was) | set(now)) if was.get(k) != now.get(k)]
+    return [
+        {"field": k, "was": was.get(k), "now": now.get(k)}
+        for k in sorted(set(was) | set(now))
+        if was.get(k) != now.get(k)
+    ]
 
 
 def latest(entries):
     """The last escalation, and the decision that answers it (None while it waits)."""
     e = next((x for x in reversed(entries) if x["kind"] == "ESCALATED"), None)
-    d = e and next((x for x in entries if x["kind"] == "DECIDED" and x.get("escalation") == e["hash"]), None)
+    d = e and next(
+        (x for x in entries if x["kind"] == "DECIDED" and x.get("escalation") == e["hash"]), None
+    )
     return e, d
 
 
 def closed(entries):
-    return next((x for x in entries if x["kind"] == "DECIDED" and x.get("decision") in ("reject", "repair")), None)
+    return next(
+        (
+            x
+            for x in entries
+            if x["kind"] == "DECIDED" and x.get("decision") in ("reject", "repair")
+        ),
+        None,
+    )
 
 
 def explain(entries, of=None):
@@ -87,16 +114,25 @@ def explain(entries, of=None):
         if e["kind"] in ("REFUSED", "AMBIGUOUS"):
             if (status(e) != of) if of else e.get("code") in ("awaiting_decision", "closed"):
                 continue
-            if any(x["kind"] == "COMMITTED" for x in entries[i + 1:]):
+            if any(x["kind"] == "COMMITTED" for x in entries[i + 1 :]):
                 return None
             reason = e.get("code") or ("ambiguous" if e["kind"] == "AMBIGUOUS" else "refused")
-            return {"effect_id": e["effect_id"], "status": status(e), "reason": reason,
-                    "why": WHY.get(reason, WHY["refused"]),
-                    "changes": e.get("changes", []), "repairs": e.get("repairs", [])}
+            return {
+                "effect_id": e["effect_id"],
+                "status": status(e),
+                "reason": reason,
+                "why": WHY.get(reason, WHY["refused"]),
+                "changes": e.get("changes", []),
+                "repairs": e.get("repairs", []),
+            }
     return None
 
 
-RANK = {"succeeded": 1, "failed": 2, "canceled": 2}   # anything else is pending; a refund never goes back
+RANK = {
+    "succeeded": 1,
+    "failed": 2,
+    "canceled": 2,
+}  # anything else is pending; a refund never goes back
 
 
 def final(statuses):
@@ -109,7 +145,13 @@ def sent_refund(entries):
     for e in entries:
         if e.get("kind") == "COMMITTED":
             r, found = e.get("result"), e.get("found")
-            return r.get("refund") if isinstance(r, dict) else found if isinstance(found, str) else None
+            return (
+                r.get("refund")
+                if isinstance(r, dict)
+                else found
+                if isinstance(found, str)
+                else None
+            )
     return None
 
 
@@ -123,5 +165,7 @@ def describe(esc):
     if esc.get("changes"):
         parts.append("Changed: " + "; ".join(render(c) for c in esc["changes"]))
     if esc.get("repairs"):
-        parts.append("Suggested, needs rules or a person: " + "; ".join(r["why"] for r in esc["repairs"]))
+        parts.append(
+            "Suggested, needs rules or a person: " + "; ".join(r["why"] for r in esc["repairs"])
+        )
     return ". ".join(parts)

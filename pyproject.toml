@@ -23,3 +23,22 @@ interlock-verify = "interlock.receipts:main"
 
 [tool.setuptools]
 packages = ["interlock", "interlock.targets", "interlock.integrations", "interlock.export"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["interlock", "examples", "support"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+files = ["examples/artifact_publication"]
+follow_imports = "silent"
+# The upstream library is not typed yet. Check the example strictly while keeping
+# that existing boundary explicit, rather than pretending the core is typed.
+untyped_calls_exclude = ["interlock"]
