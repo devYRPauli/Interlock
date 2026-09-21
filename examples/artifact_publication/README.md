@@ -88,7 +88,7 @@ Focused tests cover concurrent writers and gate instances, changed payloads, reu
 Local verification on Python 3.12.14, macOS, against upstream `822ec54692b30e1fdce04b55dfab62d0b56a60b2`:
 
 - Untouched upstream: 466 tests, 413 passed, 53 skipped.
-- With the artifact example and foundation cleanup: 490 tests, 437 passed, 53 skipped on Python 3.12.14 and 3.9.6; all 21 artifact tests passed.
+- With the artifact example and foundation cleanup: 491 tests, 438 passed, 53 skipped on Python 3.12.14 and 3.9.6; all 22 artifact tests passed.
 - Skips: 43 PostgreSQL/runtime tests without `ILR_DSN`/Hypothesis and 10 optional SDK integration tests. These integrations were not validated.
 - The demo returned `COMMITTED_ON_QUERY` with version 2 preserved; the independent `interlock.receipts` command reported `valid: true`.
 - Ruff lint/format checks, strict example type checks, and `git diff --check` passed. See the [validation record](../../docs/validation.md) for exact commands, packaging checks, and limits.

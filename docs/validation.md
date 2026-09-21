@@ -7,9 +7,9 @@ Local validation on macOS, 2026-09-20, on branch `artifact-publication`. The val
 | Check | Result |
 | --- | --- |
 | Untouched upstream baseline, Python 3.12.14 | 466 tests: 413 passed, 53 skipped. |
-| Current suite, Python 3.12.14 | 490 tests: 437 passed, 53 skipped. |
-| Current suite, Python 3.9.6 | 490 tests: 437 passed, 53 skipped. |
-| Artifact workflow | All 21 tests passed, including process kills before/after commit. |
+| Current suite, Python 3.12.14 | 491 tests: 438 passed, 53 skipped. |
+| Current suite, Python 3.9.6 | 491 tests: 438 passed, 53 skipped. |
+| Artifact workflow | All 22 tests passed, including process kills before/after commit. |
 | CLI contracts | All 3 tests passed: help, malformed arguments, and receipt verification exit codes. |
 | Ruff 0.15.21 | Lint and format checks passed in the maintained scope. |
 | mypy 1.19.1 | Strict checks passed for all 6 artifact-example modules. |
@@ -42,6 +42,7 @@ In a disposable copy, `python experiments/run_all.py` and `python viewer/build.p
 
 - Extracting the shared MCP client exposed an older test that mutated a global in another test module. Callers now import shared support and supply the desired server explicitly; the affected test and full suite passed afterward.
 - The initial package smoke check found that `--help` exited with an error. Both CLIs now use `argparse`, with tests for help, usage errors, and verification exit codes.
+- Windows CI exposed a scheduling-dependent expectation in the concurrent artifact test: a slower worker can safely refuse a stale premise after another worker commits. A deterministic interleaving test now covers that case and verifies that retry resolves to the single committed publication.
 - Documentation link tests previously left files open. Those reads now use context managers.
 
 This is a local engineering validation record. It does not establish a cloud deployment, improved benchmark performance, power-loss durability, or stronger guarantees for arbitrary remote destinations.

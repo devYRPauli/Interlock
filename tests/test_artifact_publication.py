@@ -203,11 +203,37 @@ class ArtifactRecovery(Fixture):
         self.assertTrue(any(outcome["ok"] for outcome in outcomes), outcomes)
         self.assertTrue(
             all(
-                outcome["status"] in ("COMMITTED", "DUPLICATE_IGNORED", "IN_FLIGHT")
+                outcome["status"]
+                in ("COMMITTED", "DUPLICATE_IGNORED", "IN_FLIGHT", "REFUSED:stale_premise")
                 for outcome in outcomes
             ),
             outcomes,
         )
+        self.assertEqual(self.history_count(), 1)
+        # A slower worker can see the winner's new version during preflight.
+        # Whichever immediate outcome it observed, retry must find the one commit.
+        for call in calls:
+            outcome = run(call, self.arguments)
+            self.assertEqual(outcome["status"], "DUPLICATE_IGNORED", outcome)
+            self.assertEqual(outcome["receipt"]["final"], "COMMITTED")
+        self.assertEqual(self.history_count(), 1)
+
+    def test_winner_commits_during_another_workers_preflight(self):
+        winner, slower = self.install(), self.install()
+        explain = slower.gate.target.explain
+
+        def commit_then_check(premises, effect_id, effect):
+            outcome = run(winner, self.arguments)
+            self.assertEqual(outcome["status"], "COMMITTED", outcome)
+            return explain(premises, effect_id, effect)
+
+        with patch.object(slower.gate.target, "explain", side_effect=commit_then_check):
+            outcome = run(slower, self.arguments)
+        self.assertEqual(outcome["status"], "REFUSED:stale_premise", outcome)
+        self.assertEqual(self.history_count(), 1)
+        settled = run(slower, self.arguments)
+        self.assertEqual(settled["status"], "DUPLICATE_IGNORED", settled)
+        self.assertEqual(settled["receipt"]["final"], "COMMITTED")
         self.assertEqual(self.history_count(), 1)
 
     def test_change_between_preflight_and_write_is_rejected_atomically(self):
