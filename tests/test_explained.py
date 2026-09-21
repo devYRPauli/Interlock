@@ -165,7 +165,7 @@ class Explained(unittest.TestCase):
         self.assertNotIn("repairs", r)
 
     def test_mcp_refusal_carries_structured_escalation(self):
-        from test_mcp_proxy import CONFIG, Session
+        from support.mcp_session import PAYMENTS_CONFIG as CONFIG, Session
         d = tempfile.mkdtemp()
         state = os.path.join(d, "state.json")
         with open(os.path.join(d, "config.json"), "w") as f:

@@ -74,30 +74,32 @@ class TargetErrorIsFinal(unittest.TestCase):
 
 class ProxyUpstreamExit(unittest.TestCase):
     def test_upstream_exit_mid_send_is_unknown_not_refused(self):
-        import test_mcp_proxy as t
-        fake = os.path.join(tempfile.mkdtemp(), "fake.py")
-        with open(t.FAKE) as f:
-            src = f.read().replace("            save(state)\n",
-                                   "            save(state)\n            if args.get(\"amount\") == 777:\n                os._exit(1)\n", 1)
-        with open(fake, "w") as f:
-            f.write(src)
-        old, t.FAKE = t.FAKE, fake
-        try:
-            d = tempfile.mkdtemp()
-            state = os.path.join(d, "state.json")
-            with open(os.path.join(d, "config.json"), "w") as f:
-                json.dump({"journal_dir": "journal", "claim_ttl": 1, "tools": {"create_refund": {"key": ["order_id"]}}}, f)
-            s = t.Session(d, state)
-            self.assertEqual(s.refund("881", 777)["_meta"]["interlock"]["status"], "IN_FLIGHT")
-            s.close()
-            time.sleep(1.5)                                   # past claim_ttl, so recovery takes the send over
-            s = t.Session(d, state)
-            self.assertEqual(s.refund("881", 777)["_meta"]["interlock"]["status"], "AMBIGUOUS")
-            s.kill()
-        finally:
-            t.FAKE = old
-        with open(state) as f:
-            self.assertEqual([r["amount"] for r in json.load(f)["refunds"]], [777])
+        from support.mcp_session import FAKE, Session
+        with tempfile.TemporaryDirectory() as directory:
+            fake = os.path.join(directory, "fake.py")
+            with open(FAKE) as source:
+                modified = source.read().replace(
+                    "            save(state)\n",
+                    "            save(state)\n            if args.get(\"amount\") == 777:\n                os._exit(1)\n", 1)
+            with open(fake, "w") as server:
+                server.write(modified)
+            state = os.path.join(directory, "state.json")
+            with open(os.path.join(directory, "config.json"), "w") as config:
+                json.dump({"journal_dir": "journal", "claim_ttl": 1,
+                           "tools": {"create_refund": {"key": ["order_id"]}}}, config)
+            session = Session(directory, state, server=fake)
+            try:
+                self.assertEqual(session.refund("881", 777)["_meta"]["interlock"]["status"], "IN_FLIGHT")
+            finally:
+                session.close()
+            time.sleep(1.5)  # Past claim_ttl, so recovery takes the send over.
+            session = Session(directory, state, server=fake)
+            try:
+                self.assertEqual(session.refund("881", 777)["_meta"]["interlock"]["status"], "AMBIGUOUS")
+            finally:
+                session.kill()
+            with open(state) as provider_state:
+                self.assertEqual([r["amount"] for r in json.load(provider_state)["refunds"]], [777])
 
 
 class SameArgsRedecision(unittest.TestCase):
